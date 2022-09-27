@@ -16,15 +16,15 @@ from . import utils
 log = logging.getLogger("ida_medigate")
 
 
-VTABLE_KEYWORD = "vtbl"
-VTABLE_UNION_KEYWORD = "VTABLES"
-# VTABLES_UNION_VTABLE_FIELD_POSTFIX = "_vtable"
+VTABLE_KEYWORD = "vftable"
+VTABLE_UNION_KEYWORD = "VFTABLES"
+# VTABLES_UNION_VTABLE_FIELD_POSTFIX = "_vftable"
 VTABLES_UNION_VTABLE_FIELD_POSTFIX = ""
-VTABLE_DELIMITER = "__"
-VTABLE_POSTFIX = "_vtbl"
-VTABLE_FIELD_NAME = "__vftable"  # Name For vtable * field
+VTABLE_DELIMITER = "::"
+VTABLE_POSTFIX = "_vftable"
+VTABLE_FIELD_NAME = "vfptr"  # Name For vftable * field
 VTABLE_INSTANCE_DELIMITER = VTABLE_DELIMITER
-VTABLE_INSTANCE_KEYWORD = "vtable"
+VTABLE_INSTANCE_KEYWORD = "vftable"
 VTABLE_INSTANCE_POSTFIX = VTABLE_INSTANCE_DELIMITER + VTABLE_INSTANCE_KEYWORD
 
 
@@ -36,7 +36,7 @@ def get_vtable_instance_name(class_name, parent_name=None):
 
 
 def get_base_member_name(parent_name, offset):
-    return "baseclass_%X" % offset
+    return "%s_%X" % (parent_name, offset)
 
 
 def get_vtable_line(ea, stop_ea=None, ignore_list=None, pure_virtual_name=None):
@@ -50,7 +50,7 @@ def get_vtable_line(ea, stop_ea=None, ignore_list=None, pure_virtual_name=None):
     is_pure_func = pure_virtual_name is not None and idc.GetDisasm(ea).endswith(pure_virtual_name)
     if func_ea in ignore_list and not is_pure_func:
         return None, 0
-    return func_ea, ea + utils.WORD_LEN
+    return func_ea, ea + utils.get_word_len()
 
 
 def is_valid_vtable_name(member_name):
@@ -138,8 +138,8 @@ def find_vtable_at_offset(struct_ptr, vtable_offset):
 
 def get_class_vtable_struct_name(class_name, vtable_offset_in_class):
     if vtable_offset_in_class == 0:
-        return class_name + "_vtbl"
-    return "%s_%04X_vtbl" % (class_name, vtable_offset_in_class)
+        return class_name + VTABLE_POSTFIX
+    return "%s_%04X%s" % (class_name, vtable_offset_in_class, VTABLE_POSTFIX)
 
 
 def get_class_vtable_field_name(class_name):
@@ -387,7 +387,7 @@ def update_vtable_struct(
         if add_dummy_member:
             utils.add_to_struct(vtable_struct, "dummy_%d" % dummy_i, func_ptr)
             dummy_i += 1
-            offset += utils.WORD_LEN
+            offset += utils.get_word_len()
         ptr_member = utils.add_to_struct(
             vtable_struct, new_func_name, func_ptr, offset, overwrite=True, is_offs=True
         )
@@ -399,7 +399,7 @@ def update_vtable_struct(
                 vtable_struct.id,
                 offset,
             )
-        offset += utils.WORD_LEN
+        offset += utils.get_word_len()
         if not ida_xref.add_dref(ptr_member.id, func_ea, ida_xref.XREF_USER | ida_xref.dr_I):
             log.warn(
                 "Couldn't create xref between member %s and func %s",
