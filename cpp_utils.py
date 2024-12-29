@@ -293,7 +293,7 @@ def update_func_this(func_ea, this_type=None, flags=idc.TINFO_DEFINITE):
     func_details = utils.get_func_details(func_ea)
     if not func_details:
         return False
-    if func_details.cc & idaapi.CM_CC_THISCALL != idaapi.CM_CC_THISCALL:
+    if func_details.cc != idaapi.CM_CC_THISCALL and func_details.cc != idaapi.CM_CC_FASTCALL:
         return False
     func_details[0].name = "this"
     if this_type:
