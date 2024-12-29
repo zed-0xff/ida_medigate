@@ -287,9 +287,9 @@ def update_func_name_with_class(func_ea, class_name):
 
 
 def update_func_this(func_ea, this_type=None, flags=idc.TINFO_DEFINITE):
-    if idc.get_tinfo(func_ea) is not None:
-        # don't touch any user defined type
-        return False
+    #if idc.get_tinfo(func_ea) is not None:
+    #    # don't touch any user defined type
+    #    return False
     func_details = utils.get_func_details(func_ea)
     if not func_details:
         return False
