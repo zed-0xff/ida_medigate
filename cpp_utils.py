@@ -379,8 +379,8 @@ def update_vtable_struct(
         new_func_name, _ = update_func_name_with_class(func_ea, class_name)
         func_ptr = None
         if ida_hexrays.init_hexrays_plugin():
-            fix_userpurge(func_ea, idc.TINFO_DEFINITE)
-            update_func_this(func_ea, this_type, idc.TINFO_DEFINITE)
+            fix_userpurge(func_ea, idc.TINFO_GUESSED)
+            update_func_this(func_ea, this_type, idc.TINFO_GUESSED)
             func_ptr = utils.get_typeinf_ptr(utils.get_func_tinfo(func_ea))
         else:
             func_ptr = make_funcptr_pt(func_ea, this_type)  # TODO: maybe try to get or guess type?
