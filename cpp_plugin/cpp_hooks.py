@@ -1,5 +1,6 @@
 import logging
 import ida_idp
+import ida_name
 import ida_xref
 import idautils
 import ida_typeinf
@@ -144,7 +145,7 @@ def rename_func(funcea, new_name):
     old_name = idc.get_name(funcea)
     if old_name == new_name:
         return
-    if not idc.set_name(funcea, new_name):
+    if not idc.set_name(funcea, new_name, ida_name.SN_FORCE):
         log.warn("Failed to rename func %08X %s to '%s'", funcea, old_name, new_name)
         return
     log.debug("Renamed func %08X %s to '%s'", funcea, old_name, new_name)
