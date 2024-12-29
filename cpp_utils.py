@@ -557,6 +557,26 @@ def create_vtable_struct(sptr, name, vtable_offset, parent_name=None):
     return vtable_struct, this_type
 
 
+def make_struct(name, struct_size):
+    struc = utils.get_or_create_struct(name)
+    struct_id = ida_struct.get_struc_id(name)
+    mt = idaapi.opinfo_t()
+    mt.tid = struct_id
+    cur_size = ida_struct.get_struc_size(struct_id)
+    while cur_size < struct_size:
+        r = ida_struct.add_struc_member(
+            struc,
+            "field_" + format(cur_size, "X"),
+            cur_size, # offset of a new member
+            idaapi.FF_DWORD,
+            mt,
+            4,
+        )
+        if r != 0:
+            break
+        cur_size = ida_struct.get_struc_size(struct_id)
+    return cur_size
+
 def make_vtable(
     class_name,
     struct_size=None,
