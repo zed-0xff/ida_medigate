@@ -143,6 +143,8 @@ def rename_func(funcea, new_name):
     assert funcea and utils.is_func_start(funcea)
     assert new_name
     old_name = idc.get_name(funcea)
+    if '__purecall' in old_name:
+        return
     if old_name == new_name:
         return
     if not idc.set_name(funcea, new_name, ida_name.SN_FORCE):
