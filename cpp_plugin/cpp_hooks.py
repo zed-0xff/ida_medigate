@@ -129,6 +129,9 @@ def rename_member(mid, new_name):
     if old_name == new_name:
         return
     assert not ida_struct.is_special_member(mid), mid  # special member name begins with ' '
+    member_cmt = ida_struct.get_member_cmt(mid, 0)
+    if member_cmt is not None and 'NOLINK' in member_cmt:
+        return
     mptr, _, sptr = utils.get_member_by_id(mid)
     assert sptr, mid
     assert mptr, mid
@@ -200,6 +203,9 @@ class CPPHooks(ida_idp.IDB_Hooks):
             return 0
         funcea = get_linked_func(mptr.id)
         if not funcea:
+            return 0
+        member_cmt = ida_struct.get_member_cmt(mptr.id, 0)
+        if member_cmt is not None and 'NOLINK' in member_cmt:
             return 0
         new_name = ida_struct.get_member_name(mptr.id)
         assert new_name, mptr.id
