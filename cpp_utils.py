@@ -416,8 +416,8 @@ def update_vtable_struct(
 
     if vtable_head is None:
         vtable_head = functions_ea
-    # ida_bytes.del_items(vtable_head, ida_bytes.DELIT_SIMPLE, vtable_size)
-    ida_bytes.create_struct(vtable_head, vtable_size, vtable_struct.id)
+    # don't create a struct at the vtable_head bc it makes VTableNav navigation harder
+    #ida_bytes.create_struct(vtable_head, vtable_size, vtable_struct.id)
     if not idc.hasUserName(idc.get_full_flags(vtable_head)) or force_rename_vtable_head:
         if parent_name is None and this_type:
             parent = utils.deref_struct_from_tinfo(this_type)
