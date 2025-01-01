@@ -564,14 +564,24 @@ def make_struct(name, struct_size):
     mt.tid = struct_id
     cur_size = ida_struct.get_struc_size(struct_id)
     while cur_size < struct_size:
-        r = ida_struct.add_struc_member(
-            struc,
-            "field_" + format(cur_size, "X"),
-            cur_size, # offset of a new member
-            idaapi.FF_DWORD,
-            mt,
-            4,
-        )
+        if struct_size - cur_size >= 8 and utils.get_word_len() == 8:
+            r = ida_struct.add_struc_member(
+                struc,
+                "field_" + format(cur_size, "X"),
+                cur_size, # offset of a new member
+                idaapi.FF_QWORD,
+                mt,
+                8
+            )
+        elif struct_size - cur_size >= 4:
+            r = ida_struct.add_struc_member(struc, "field_" + format(cur_size, "X"), cur_size, idaapi.FF_DWORD, mt, 4)
+
+        elif struct_size - cur_size >= 2:
+            r = ida_struct.add_struc_member(struc, "field_" + format(cur_size, "X"), cur_size, idaapi.FF_WORD, mt, 2)
+
+        elif struct_size - cur_size == 1:
+            r = ida_struct.add_struc_member(struc, "field_" + format(cur_size, "X"), cur_size, idaapi.FF_BYTE, mt, 1)
+
         if r != 0:
             break
         cur_size = ida_struct.get_struc_size(struct_id)
@@ -596,23 +606,7 @@ def make_vtable(
         parent_name=parent_name,
     )
     if struct_size:
-        struct_id = ida_struct.get_struc_id(class_name)
-        struc = ida_struct.get_struc(struct_id)
-        mt = idaapi.opinfo_t()
-        mt.tid = struct_id
-        cur_size = ida_struct.get_struc_size(struct_id)
-        while cur_size < struct_size:
-            r = ida_struct.add_struc_member(
-                struc,
-                "field_" + format(cur_size, "X"),
-                cur_size, # offset of a new member
-                idaapi.FF_DWORD,
-                mt,
-                4,
-            )
-            if r != 0:
-                break
-            cur_size = ida_struct.get_struc_size(struct_id)
+        make_struct(class_name, struct_size)
     if not vtable_struct:
         return
     update_vtable_struct(
