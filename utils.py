@@ -52,10 +52,10 @@ except Exception as ex:
 
 def get_word(ea):
     info = idaapi.get_inf_structure()
-    if info.is_32bit():
-        return idaapi.get_32bit(ea)
-    elif info.is_64bit():
+    if info.is_64bit():
         return idaapi.get_64bit(ea)
+    elif info.is_32bit():
+        return idaapi.get_32bit(ea)
     return BADADDR
 
 
@@ -65,10 +65,10 @@ def get_ptr(ea):
 
 def make_word(ea):
     info = idaapi.get_inf_structure()
-    if info.is_32bit():
-        return ida_bytes.create_dword(ea, 4)
-    elif info.is_64bit():
+    if info.is_64bit():
         return ida_bytes.create_qword(ea, 8)
+    elif info.is_32bit():
+        return ida_bytes.create_dword(ea, 4)
     return False
 
 
