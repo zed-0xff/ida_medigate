@@ -339,8 +339,7 @@ def fix_userpurge(funcea, flags=idc.TINFO_DEFINITE):
         return False
     typestr = typestr.replace("__userpurge", "(__thiscall)")
     typestr = re.sub(r"\@\<\w+\>", "", typestr)
-    PT_SILENT = 1  # in IDA7.0 idc.PT_SILENT=2, which is incorrect
-    py_type = idc.parse_decl(typestr, PT_SILENT)
+    py_type = idc.parse_decl(typestr, idc.PT_SILENT)
     if not py_type:
         log.warn("%08X Failed to fix userpurge", funcea)
         return False
