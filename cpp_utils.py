@@ -586,6 +586,33 @@ def make_struct(name, struct_size):
         cur_size = ida_struct.get_struc_size(struct_id)
     return cur_size
 
+def find_structs_by_size(size, ignore_prefixes: list = []):
+    """
+    Enumerate all defined structures and filter those of a specified size.
+    :param size: The size to filter structures by (in bytes).
+    :return: A list of tuples (structure_name, structure_id, structure_size).
+    """
+    matching_structs = []
+
+    # Iterate over all structures in IDA
+    for idx in range(ida_struct.get_struc_qty()):
+        sid = ida_struct.get_struc_by_idx(idx)
+        if sid == BADADDR:
+            continue
+
+        struct = ida_struct.get_struc(sid)
+        if not struct:
+            continue
+
+        # Check the size of the structure
+        struct_size = ida_struct.get_struc_size(struct)
+        if struct_size == size:
+            name = ida_struct.get_struc_name(sid)
+            if not any(name.startswith(prefix) for prefix in ignore_prefixes):
+                matching_structs.append(name)
+
+    return matching_structs
+
 def make_vtable(
     class_name,
     struct_size=None,
