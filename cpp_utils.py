@@ -586,12 +586,15 @@ def make_struct(name, struct_size):
         cur_size = ida_struct.get_struc_size(struct_id)
     return cur_size
 
-def find_structs_by_size(size, ignore_prefixes: list = []):
+def find_structs_by_size(size = None, min_size: int = 0, ignore_prefixes: list = []):
     """
     Enumerate all defined structures and filter those of a specified size.
     :param size: The size to filter structures by (in bytes).
     :return: A list of tuples (structure_name, structure_id, structure_size).
     """
+    if size is None and min_size <= 0:
+        raise ValueError("Either size or min_size must be specified")
+
     matching_structs = []
 
     # Iterate over all structures in IDA
@@ -606,7 +609,7 @@ def find_structs_by_size(size, ignore_prefixes: list = []):
 
         # Check the size of the structure
         struct_size = ida_struct.get_struc_size(struct)
-        if struct_size == size:
+        if (size is None and struct_size >= min_size) or (size is not None and struct_size == size):
             name = ida_struct.get_struc_name(sid)
             if not any(name.startswith(prefix) for prefix in ignore_prefixes):
                 matching_structs.append(name)
