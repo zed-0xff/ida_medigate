@@ -44,6 +44,8 @@ def get_vtable_line(ea, stop_ea=None, ignore_list=None, pure_virtual_name=None):
         ignore_list = []
     func_ea = utils.get_ptr(ea)
     if not utils.is_func_start(func_ea):
+        func_ea -= 1 # ARM: function pointers point to func_start+1
+    if not utils.is_func_start(func_ea):
         return None, 0
     if stop_ea is not None and ea >= stop_ea:
         return None, 0
