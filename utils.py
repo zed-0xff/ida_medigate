@@ -60,7 +60,10 @@ def get_word(ea):
 
 
 def get_ptr(ea):
-    return get_word(ea)
+    base = idaapi.get_offbase(ea, 0)
+    if base == BADADDR:
+        base = 0
+    return base + get_word(ea)
 
 
 def make_word(ea):
