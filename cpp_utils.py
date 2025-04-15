@@ -282,6 +282,11 @@ def add_child_vtable(parent_name, child_name, child_vtable_id, offset):
 
 def update_func_name_with_class(func_ea, class_name):
     name = idc.get_name(func_ea)
+    if name.startswith("?") and (demangled := ida_name.demangle_name(name, idaapi.MNG_SHORT_FORM)):
+        # 'sentry::Sentry::getDongleIds(sentry::DongleIdList *)' => 'getDongleIds'
+        name = demangled.split("(",2)[0].split("::")[-1]
+        if name.startswith("~"):
+            name = "dtor"
     if name.startswith("sub_"):
         new_name = class_name + VTABLE_DELIMITER + name
         return utils.set_func_name(func_ea, new_name), True
