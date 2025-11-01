@@ -1,6 +1,14 @@
 __pycache__/
-*.pyc
-.env
-.vscode/
 .DS_Store
+.env
 .python-version
+.venv/*
+.vscode/
+*.i64
+*.id0
+*.id1
+*.id2
+*.idb
+*.nam
+*.pyc
+*.til

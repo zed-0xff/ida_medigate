@@ -1,11 +1,11 @@
 import logging
 
 import ida_name
-import ida_struct
+import ida_typeinf
+import ida_bytes
 import idautils
 import idc
-import idaapi
-from idaapi import BADADDR
+from ida_idaapi import BADADDR
 
 from . import cpp_utils
 from . import utils
@@ -58,7 +58,7 @@ class RTTIParser(object):
                 if built_rtti_obj_name.endswith(cls.RTTI_OBJ_STRUC_NAME):
                     parent_updated_name = built_rtti_obj_name.rstrip("_" + cls.RTTI_OBJ_STRUC_NAME)
             if parent_updated_name is not None:
-                rtti_obj.updated_parents.append((parent_updated_name, offset))
+                rtti_obj.updated_parents.append((parent_updated_name, offset * utils.BYTE_SIZE))
 
         log.debug("%s: Finish setup parents", rtti_obj.name)
         if not rtti_obj.create_structs():
@@ -71,24 +71,24 @@ class RTTIParser(object):
         self.struct_id = utils.add_struc_retry(self.name)
         if self.struct_id == BADADDR:
             return False
-        self.name = idc.get_struc_name(self.struct_id)
-        self.struct_ptr = ida_struct.get_struc(self.struct_id)
+        self.struct_ptr = ida_typeinf.tinfo_t(tid=self.struct_id)
         if self.struct_ptr is None:
             log.exception("self.struct_ptr is None at %s", self.name)
         previous_parent_offset = 0
         previous_parent_size = 0
         previous_parent_struct_id = BADADDR
         for parent_name, parent_offset in self.updated_parents:
+            logging.info(f"{parent_name=}, {parent_offset=}")
             if (
-                parent_offset - previous_parent_offset > previous_parent_size
+                (parent_offset - previous_parent_offset) // utils.BYTE_SIZE > previous_parent_size
                 and previous_parent_struct_id != BADADDR
             ):
                 utils.expand_struct(
                     previous_parent_struct_id,
                     parent_offset - previous_parent_offset,
                 )
-            baseclass_id = ida_struct.get_struc_id(parent_name)
-            baseclass_size = ida_struct.get_struc_size(baseclass_id)
+            baseclass_id = ida_typeinf.tinfo_t(name=parent_name).get_tid()
+            baseclass_size = ida_typeinf.tinfo_t(name=parent_name).get_size()
             if baseclass_id == BADADDR or baseclass_size == 0:
                 log.warning(
                     "bad struct id or size: %s(0x%X:%s) - 0x%X, %d",
@@ -190,9 +190,15 @@ class GccRTTIParser(RTTIParser):
     @classmethod
     def init_parser(cls):
         super(GccRTTIParser, cls).init_parser()
-        cls.type_vmi = ida_name.get_name_ea(idaapi.BADADDR, cls.VMI) + get_OFFSET_FROM_TYPEINF_SYM()
-        cls.type_si = ida_name.get_name_ea(idaapi.BADADDR, cls.SI) + get_OFFSET_FROM_TYPEINF_SYM()
-        cls.type_none = ida_name.get_name_ea(idaapi.BADADDR, cls.NONE) + get_OFFSET_FROM_TYPEINF_SYM()
+        cls.type_vmi = (
+            ida_name.get_name_ea(BADADDR, cls.VMI) + cls.OFFSET_FROM_TYPEINF_SYM
+        )
+        cls.type_si = (
+            ida_name.get_name_ea(BADADDR, cls.SI) + cls.OFFSET_FROM_TYPEINF_SYM
+        )
+        cls.type_none = (
+            ida_name.get_name_ea(BADADDR, cls.NONE) + cls.OFFSET_FROM_TYPEINF_SYM
+        )
         cls.types = (cls.type_vmi, cls.type_si, cls.type_none)
 
     @classmethod
@@ -246,7 +252,9 @@ class GccRTTIParser(RTTIParser):
 
     @classmethod
     def parse_vmi_typeinfo(cls, typeinfo_ea):
-        base_classes_num = idaapi.get_32bit(typeinfo_ea + get_VMI_TYPEINFO_BASE_CLASSES_NUM_OFFSET())
+        base_classes_num = ida_bytes.get_32bit(
+            typeinfo_ea + cls.VMI_TYPEINFO_BASE_CLASSES_NUM_OFFSET
+        )
         parents = []
         for i in range(base_classes_num):
             base_class_desc_ea = (
@@ -305,8 +313,8 @@ class GccRTTIParser(RTTIParser):
             pure_virtual_name=self.pure_virtual_name,
         )
         if func_ea is None:
-            return None
-        vtable_offset = utils.get_signed_int(ea - utils.get_word_len()) * (-1)
+            return
+        vtable_offset = (utils.get_signed_int(ea - utils.WORD_LEN) * (-1)) * utils.BYTE_SIZE
         vtable_struct, this_type = self.create_vtable_struct(vtable_offset)
         cpp_utils.update_vtable_struct(
             functions_ea,
