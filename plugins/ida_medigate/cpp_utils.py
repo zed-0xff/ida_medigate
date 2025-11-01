@@ -51,7 +51,7 @@ def get_vtable_line(ea, stop_ea=None, ignore_list=None, pure_virtual_name=None):
     is_pure_func = pure_virtual_name is not None and idc.GetDisasm(ea).endswith(pure_virtual_name)
     if func_ea in ignore_list and not is_pure_func:
         return None, 0
-    return func_ea, ea + utils.get_word_len()
+    return func_ea, ea + utils.WORD_LEN
 
 
 def is_valid_vtable_name(member_name):
@@ -639,7 +639,7 @@ def make_struct(name, struct_size):
     mt.tid = struct_id
     cur_size = ida_struct.get_struc_size(struct_id)
     while cur_size < struct_size:
-        if struct_size - cur_size >= 8 and utils.get_word_len() == 8:
+        if struct_size - cur_size >= 8 and utils.WORD_LEN == 8:
             r = ida_struct.add_struc_member(
                 struc,
                 "field_" + format(cur_size, "X"),
