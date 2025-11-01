@@ -117,7 +117,7 @@ def find_vtable_at_offset(struct_ptr: ida_typeinf.tinfo_t, vtable_offset: int):
         )
         _, member = current_struct.get_udm_by_offset(vtable_offset - current_offset)
         if member is None:
-            log.exception(
+            logging.exception(
                 "Couldn't find vtable at offset %d for %d",
                 vtable_offset - current_offset,
                 struct_ptr.get_tid(),
@@ -192,7 +192,7 @@ def install_vtables_union(
     vtables_union_id = utils.get_or_create_struct_id(vtables_union_name, True)
     vtable_member_tinfo = utils.get_typeinf(old_vtable_class_name + "_orig")
     if vtables_union_id == BADADDR:
-        log.exception(
+        logging.exception(
             "Cannot create union vtable for %s()%s",
             class_name,
             vtables_union_name,
@@ -202,7 +202,7 @@ def install_vtables_union(
 
     vtables_union = ida_typeinf.tinfo_t(tid=vtables_union_id)
     if not vtables_union:
-        log.exception("Could retrieve vtables union for %s", class_name)
+        logging.exception("Could retrieve vtables union for %s", class_name)
         # FIXME: return -1?
     if vtable_member_tinfo is not None:
         vtables_union_vtable_field_name = get_class_vtables_field_name(class_name)
@@ -236,7 +236,7 @@ def install_vtables_union(
 
 
 def add_child_vtable(parent_name, child_name, child_vtable_id, offset):
-    log.debug(
+    logging.debug(
         "add_child_vtable (%s, %s, %d)",
         parent_name,
         child_name,
@@ -256,11 +256,11 @@ def add_child_vtable(parent_name, child_name, child_vtable_id, offset):
         or (parent_vtable_struct.get_tid() != pointed_struct.get_tid())
     ):
         parent_vtable_member = None
-        log.debug("Not a struct vtable: %s", str(vtable_member_tinfo))
+        logging.debug("Not a struct vtable: %s", str(vtable_member_tinfo))
 
     # TODO: Check that struct is a valid vtable by name
     if not parent_vtable_struct.is_union():
-        log.debug("%s vtable isn't union -> unionize it!", parent_name)
+        logging.debug("%s vtable isn't union -> unionize it!", parent_name)
         parent_vtable_struct = install_vtables_union(
             parent_name, parent_vtable_member, vtable_member_tinfo, offset
         )
@@ -324,7 +324,7 @@ def add_class_vtable(struct_ptr, vtable_name, offset=BADADDR, vtable_field_name=
         struct_ptr, vtable_field_name, vtable_type_ptr, offset, overwrite=True
     )
     if new_member is None:
-        log.warning(
+        logging.warning(
             "vtable of %s couldn't added at offset 0x%X",
             str(vtable_type_ptr),
             offset,
@@ -416,7 +416,7 @@ def fix_userpurge(funcea, flags=idc.TINFO_DEFINITE):
     typestr = re.sub(r"\@\<\w+\>", "", typestr)
     py_type = idc.parse_decl(typestr, idc.PT_SILENT)
     if not py_type:
-        log.warn("%08X Failed to fix userpurge", funcea)
+        logging.warn("%08X Failed to fix userpurge", funcea)
         return False
     return idc.apply_type(funcea, py_type[1:], flags)
 
@@ -477,7 +477,7 @@ def update_vtable_struct(
                 is_offset=True
             )
         if ptr_member is None:
-            log.error(
+            logging.error(
                 "Couldn't add %s(%s) to vtable struct 0x%X at offset 0x%X",
                 new_func_name,
                 str(func_ptr),
@@ -544,7 +544,7 @@ def get_overriden_func_names(union_name, offset, get_not_funcs_members=False):
             continue
         cls = member.name
         tinfo = utils.get_member_tinfo(member)
-        log.debug("Trying %s", cls)
+        logging.debug("Trying %s", cls)
         if cls == get_interface_empty_vtable_name() or not tinfo.is_ptr():
             continue
         pointed_obj = tinfo.get_pointed_object()
@@ -575,7 +575,7 @@ def set_polymorhpic_func_name(union_name, offset, name, force=False):
                 if new_func_name != "":
                     new_func_name += VTABLE_DELIMITER
                 new_func_name += name
-                log.debug("%08X -> %s", ea, new_func_name)
+                logging.debug("%08X -> %s", ea, new_func_name)
                 utils.set_func_name(ea, new_func_name)
 
 
@@ -592,13 +592,13 @@ def create_class(class_name, has_vtable, parent_class=None):
 
 
 def create_vtable_struct(sptr, name, vtable_offset, parent_name=None):
-    log.debug("create_vtable_struct(%s, 0x%X)", name, vtable_offset)
+    logging.debug("create_vtable_struct(%s, 0x%X)", name, vtable_offset)
     vtable_details = find_vtable_at_offset(sptr, vtable_offset)
     parent_vtable_member = None
     parent_vtable_struct = None
     parents_chain = None
     if vtable_details is not None:
-        log.debug("Found parent vtable %s 0x%X", name, vtable_offset)
+        logging.debug("Found parent vtable %s 0x%X", name, vtable_offset)
         (
             parent_vtable_member,
             parent_vtable_struct,
@@ -614,7 +614,7 @@ def create_vtable_struct(sptr, name, vtable_offset, parent_name=None):
     else:
         this_type = utils.get_typeinf_ptr(parent_name)
     if vtable_name is None:
-        log.exception(
+        logging.exception(
             "create_vtable_struct(%s, 0x%X): vtable_name is" " None",
             name,
             vtable_offset,
@@ -731,7 +731,7 @@ def add_baseclass(class_name, baseclass_name, baseclass_offset=0, to_refresh=Fal
                                  offset=baseclass_offset,
                                  overwrite=True)
     if not member:
-        log.debug(
+        logging.debug(
             "add_baseclass(%s. %s): member not found",
             class_name,
             baseclass_name,
