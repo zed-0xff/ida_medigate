@@ -67,8 +67,11 @@ def is_func(ea):
     return None
 
 
-def get_funcs_list():
-    pass
+def get_func_start(ea):
+    func = ida_funcs.get_func(ea)
+    if not func:
+        return BADADDR
+    return func.start_ea
 
 
 def get_drefs(ea):
@@ -84,6 +87,22 @@ def get_typeinf(typestr):
     return tif
 
 
+def deserialize_tinfo(py_type):
+    """@param py_type: tuple(type, fields) """
+    # tif.deserialize(None, xtype, None) is fine
+    # tif.deserialize(None, None, fields) returns None
+    # tif.deserialize(None, None, None) crashes IDA (tested on IDA7.0 and IDA7.5 SP3)
+    if py_type is None:
+        return None
+    xtype, fields = py_type
+    if xtype is None:
+        return None
+    tif = ida_typeinf.tinfo_t()
+    if not tif.deserialize(None, xtype, fields):
+        return None
+    return tif
+
+
 def get_typeinf_ptr(typeinf: str | ida_typeinf.tinfo_t | None):
     old_typeinf = typeinf
     if isinstance(typeinf, str):
@@ -96,6 +115,31 @@ def get_typeinf_ptr(typeinf: str | ida_typeinf.tinfo_t | None):
     return tif
 
 
+def get_func_type(funcea):
+    """
+    Try to get decompiled func type.
+    If can't decompile func, try to get tinfo from funcea,
+    And if funcaa doesn't have associated tinfo, try to guess type at funcea
+    @return: tuple(type, fnames)
+    """
+    if not is_func(funcea):
+        logging.warn("%08X is not a func", funcea)
+        return None
+    funcea = get_func_start(funcea)
+    try:
+        xfunc = ida_hexrays.decompile(funcea)
+        return xfunc.type.serialize()[:-1]
+    except ida_hexrays.DecompilationFailure as ex:
+        logging.warn(
+            "Couldn't decompile func at %08X: %s, getting or guessing func type from ea", funcea, ex
+        )
+        return get_or_guess_tinfo(funcea)
+
+
+def get_func_tinfo(funcea):
+    return deserialize_tinfo(get_func_type(funcea))
+
+
 def get_func_details(func_ea):
     xfunc = ida_hexrays.decompile(func_ea)
     if xfunc is None:
@@ -105,10 +149,10 @@ def get_func_details(func_ea):
     return func_details
 
 
-def update_func_details(func_ea, func_details):
+def update_func_details(func_ea, func_details, flags=ida_typeinf.TINFO_DEFINITE):
     function_tinfo = ida_typeinf.tinfo_t()
     function_tinfo.create_func(func_details)
-    if not ida_typeinf.apply_tinfo(func_ea, function_tinfo, ida_typeinf.TINFO_DEFINITE):
+    if not ida_typeinf.apply_tinfo(func_ea, function_tinfo, flags):
         return None
     return function_tinfo
 
@@ -207,6 +251,22 @@ def deref_tinfo(tinfo: ida_typeinf.tinfo_t):
     if tinfo.is_ptr():
         pointed_obj = tinfo.get_pointed_object()
     return pointed_obj
+
+
+def guess_tinfo(ea):
+    """@return: tuple(type, fields) just like idc.get_tinfo()"""
+    tif = ida_typeinf.tinfo_t()
+    if ida_typeinf.guess_tinfo(tif, ea):
+        return tif.serialize()[:-1]
+    return None
+
+
+def get_or_guess_tinfo(ea):
+    """@return: tuple(type, fields) just like idc.get_tinfo()"""
+    py_type = idc.get_tinfo(ea)
+    if py_type:
+        return py_type
+    return guess_tinfo(ea)
 
 
 def deref_struct_from_tinfo(tinfo: ida_typeinf.tinfo_t):

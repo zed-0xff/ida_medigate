@@ -9,6 +9,7 @@ import ida_typeinf
 import ida_nalt
 import ida_xref
 import ida_idaapi
+import idaapi
 import idautils
 import idc
 from ida_idaapi import BADADDR
@@ -296,18 +297,21 @@ def update_func_name_with_class(func_ea, class_name):
     return name, False
 
 
-def update_func_this(func_ea, this_type=None):
+def update_func_this(func_ea, this_type=None, flags=ida_typeinf.TINFO_DEFINITE):
     functype = None
     try:
         func_details = utils.get_func_details(func_ea)
         logging.info(f"{func_details=}")
         if func_details is None:
             return None
+        cc = func_details.get_explicit_cc()
+        if cc != idaapi.CM_CC_THISCALL and cc != idaapi.CM_CC_FASTCALL:
+            return None
         if this_type:
             if len(func_details) > 0:
                 func_details[0].name = "this"
                 func_details[0].type = this_type
-        functype = utils.update_func_details(func_ea, func_details)
+        functype = utils.update_func_details(func_ea, func_details, flags)
         logging.info(f"{functype=}")
     except ida_hexrays.DecompilationFailure as e:
         logging.exception("Couldn't decompile 0x%x", func_ea)
@@ -399,7 +403,7 @@ def make_funcptr_pt(func, this_type):
     return utils.get_typeinf("void (*)(%s *)" % str(this_type))
 
 
-def fix_userpurge(funcea, flags=idc.TINFO_DEFINITE):
+def fix_userpurge(funcea, flags=ida_typeinf.TINFO_DEFINITE):
     """@return: True if __userpurge calling conv was found and fixed at funcea, otherwise False"""
     funcea = utils.get_func_start(funcea)
     if funcea == BADADDR:
@@ -442,7 +446,7 @@ def update_vtable_struct(
         this_type = utils.get_typeinf_ptr(class_name)
     if not add_func_this:
         this_type = None
-    func_ea, next_func = get_next_func_callback(
+    func, next_func = get_next_func_callback(
         functions_ea,
         ignore_list=ignore_list,
         pure_virtual_name=pure_virtual_name,
@@ -453,11 +457,11 @@ def update_vtable_struct(
         new_func_name, is_name_changed = update_func_name_with_class(func, class_name)
         func_ptr = None
         if ida_hexrays.init_hexrays_plugin():
-            fix_userpurge(func_ea, idc.TINFO_GUESSED)
-            update_func_this(func_ea, this_type, idc.TINFO_GUESSED)
-            func_ptr = utils.get_typeinf_ptr(utils.get_func_tinfo(func_ea))
+            fix_userpurge(func, ida_typeinf.TINFO_GUESSED)
+            update_func_this(func, this_type, ida_typeinf.TINFO_GUESSED)
+            func_ptr = utils.get_typeinf_ptr(utils.get_func_tinfo(func))
         else:
-            func_ptr = make_funcptr_pt(func_ea, this_type)  # TODO: maybe try to get or guess type?
+            func_ptr = make_funcptr_pt(func, this_type)  # TODO: maybe try to get or guess type?
         if add_dummy_member:
             utils.add_to_struct(vtable_struct, "dummy_%d" % dummy_i, func_ptr)
             dummy_i += 1
@@ -577,18 +581,6 @@ def set_polymorhpic_func_name(union_name, offset, name, force=False):
                 new_func_name += name
                 logging.debug("%08X -> %s", ea, new_func_name)
                 utils.set_func_name(ea, new_func_name)
-
-
-def create_class(class_name, has_vtable, parent_class=None):
-    udt = ida_typeinf.udt_type_data_t()
-    type_info = ida_typeinf.tinfo_t()
-    udt.is_union = False
-    if (
-        type_info.create_udt(udt) and
-        type_info.set_named_type(None, class_name) == ida_typeinf.TERR_OK
-    ):
-        return type_info
-    return None
 
 
 def create_vtable_struct(sptr, name, vtable_offset, parent_name=None):
