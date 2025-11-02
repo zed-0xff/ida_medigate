@@ -224,7 +224,13 @@ def add_to_struct(
             logging.info(f"{formatted_member_name=}, {member_type=}, {offset=}, {flag=}, {member.name=}, {member.offset=}")
         else:
             logging.info(f"{formatted_member_name=}, {member_type=}, {offset=}, {flag=}")
-        ret_val = struct.add_udm(formatted_member_name, member_type, offset, flag)
+        # check for duplicate names
+        while struct.get_udm(formatted_member_name)[0] != -1:
+            formatted_member_name = f"{member_name}_{i}"
+            i += 1
+            if i > 250:
+                return -1, None
+        ret_val = struct.add_udm(formatted_member_name, member_type, offset, flag) # will raise error on duplicate names
         member: ida_typeinf.udm_t = struct.get_udm_by_offset(offset)
         while ret_val != 0:
             formatted_member_name = f"{member_name}_{i}"
