@@ -488,6 +488,9 @@ def update_vtable_struct(
                 vtable_struct.get_tid(),
             )
         ida_xref.add_dref(ptr_member.type.get_tid(), func, ida_xref.XREF_USER | ida_xref.dr_I)
+        field_idx = vtable_struct.find_udm(ptr_member, 0)
+        field_cmt = f"{func:08x}"
+        vtable_struct.set_udm_cmt(field_idx, field_cmt, False)
         func, next_func = get_next_func_callback(
             next_func, ignore_list=ignore_list, pure_virtual_name=pure_virtual_name
         )
