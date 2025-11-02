@@ -335,9 +335,16 @@ def get_or_create_struct_id(struct_name, is_union=False):
             return type_info.get_tid()
 
 
-def get_or_create_struct(struct_name):
+def get_or_create_struct(struct_name, replace_forward_decl=True):
     struct_id = get_or_create_struct_id(struct_name)
-    return ida_typeinf.tinfo_t(tid=struct_id)
+    t = ida_typeinf.tinfo_t(tid=struct_id)
+    if replace_forward_decl and t and t.is_forward_decl() and t.get_size() == BADADDR:
+        logging.warn("Struct %s is forward decl, replacing with a regular struct", struct_name)
+        t2 = ida_typeinf.tinfo_t()
+        t2.create_udt(ida_typeinf.udt_type_data_t())
+        t2.set_named_type(None, struct_name, ida_typeinf.NTF_REPLACE)
+        t = t2
+    return t
 
 
 def get_signed_int(ea):
