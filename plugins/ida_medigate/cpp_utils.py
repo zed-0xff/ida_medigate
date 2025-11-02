@@ -286,11 +286,13 @@ def add_child_vtable(parent_name, child_name, child_vtable_id, offset):
 
 def update_func_name_with_class(func_ea, class_name):
     name = idc.get_name(func_ea)
-    if name.startswith("?") and (demangled := ida_name.demangle_name(name, idaapi.MNG_SHORT_FORM)):
+    if (demangled := ida_name.demangle_name(name, idaapi.MNG_SHORT_FORM)):
         # 'sentry::Sentry::getDongleIds(sentry::DongleIdList *)' => 'getDongleIds'
         name = demangled.split("(",2)[0].split("::")[-1]
-        if name.startswith("~"):
-            name = "dtor"
+    if "::" in name: # not demangled name may have '::' ?
+        name = name.split("::")[-1]
+    if name.startswith("~"):
+        name = "dtor"
     if name.startswith("sub_"):
         new_name = class_name + VTABLE_DELIMITER + name
         return utils.set_func_name(func_ea, new_name), True
@@ -454,7 +456,8 @@ def update_vtable_struct(
     dummy_i = 1
     function_count = 0
     while func is not None:
-        new_func_name, is_name_changed = update_func_name_with_class(func, class_name)
+        new_func_name, _ = update_func_name_with_class(func, class_name)
+        new_field_name = new_func_name.split(VTABLE_DELIMITER)[-1]
         func_ptr = None
         if ida_hexrays.init_hexrays_plugin():
             fix_userpurge(func, ida_typeinf.TINFO_GUESSED)
@@ -470,20 +473,21 @@ def update_vtable_struct(
         if function_count == 0:
             # We did an hack for vtables contained in union vtable with one dummy member
             _, ptr_member = utils.add_to_struct(
-                vtable_struct, new_func_name, func_ptr, 0, overwrite=True
+                vtable_struct, new_field_name, func_ptr, 0, overwrite=True
             )
         else:
             _, ptr_member = utils.add_to_struct(
                 vtable_struct,
-                new_func_name,
+                new_field_name,
                 func_ptr,
                 function_count * utils.WORD_LEN * utils.BYTE_SIZE,
-                is_offset=True
+                is_offset=True,
+                overwrite=True
             )
         if ptr_member is None:
             logging.error(
                 "Couldn't add %s(%s) to vtable struct 0x%X at offset 0x%X",
-                new_func_name,
+                new_field_name,
                 str(func_ptr),
                 vtable_struct.get_tid(),
             )
