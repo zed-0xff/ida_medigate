@@ -26,6 +26,7 @@ VTABLE_INSTANCE_DELIMITER = VTABLE_DELIMITER
 VTABLE_INSTANCE_KEYWORD = "vftable"
 VTABLE_INSTANCE_POSTFIX = VTABLE_INSTANCE_DELIMITER + VTABLE_INSTANCE_KEYWORD
 MF_BASECLASS = 0x400
+PURE_VIRTUAL_NAME = '__cxa_pure_virtual'
 
 
 def get_vtable_instance_name(class_name, parent_name=None):
@@ -39,19 +40,20 @@ def get_base_member_name(parent_name, offset):
     return "%s_%X" % (parent_name, offset)
 
 
-def get_vtable_line(ea, stop_ea=None, ignore_list=None, pure_virtual_name=None):
+def get_vtable_line(ea, stop_ea=None, ignore_list=None, pure_virtual_name=PURE_VIRTUAL_NAME):
+    if stop_ea is not None and ea >= stop_ea:
+        return None, 0
     if ignore_list is None:
         ignore_list = []
     func_ea = utils.get_ptr(ea)
-    if not utils.is_func(func_ea):
-        func_ea -= 1 # ARM: function pointers point to func_start+1
-    if not utils.is_func(func_ea):
-        return None, 0
-    if stop_ea is not None and ea >= stop_ea:
+    if func_ea in ignore_list:
         return None, 0
     is_pure_func = pure_virtual_name is not None and idc.GetDisasm(ea).endswith(pure_virtual_name)
-    if func_ea in ignore_list and not is_pure_func:
-        return None, 0
+    if not is_pure_func:
+        if not utils.is_func(func_ea):
+            func_ea -= 1 # ARM: function pointers point to func_start+1
+        if not utils.is_func(func_ea):
+            return None, 0
     return func_ea, ea + utils.WORD_LEN
 
 
@@ -436,7 +438,6 @@ def update_vtable_struct(
     vtable_head=None,
     ignore_list=None,
     add_dummy_member=False,
-    pure_virtual_name=None,
     parent_name=None,
     add_func_this=True,
     force_rename_vtable_head=False,  # rename vtable head even if it is already named by IDA
@@ -451,7 +452,6 @@ def update_vtable_struct(
     func, next_func = get_next_func_callback(
         functions_ea,
         ignore_list=ignore_list,
-        pure_virtual_name=pure_virtual_name,
     )
     dummy_i = 1
     function_count = 0
@@ -496,7 +496,7 @@ def update_vtable_struct(
         field_cmt = f"{func:08x}"
         vtable_struct.set_udm_cmt(field_idx, field_cmt, False)
         func, next_func = get_next_func_callback(
-            next_func, ignore_list=ignore_list, pure_virtual_name=pure_virtual_name
+            next_func, ignore_list=ignore_list
         )
         function_count += 1
 
