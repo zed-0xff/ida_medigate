@@ -143,20 +143,20 @@ class RTTIParser(object):
 
 
 def get_OFFSET_FROM_TYPEINF_SYM():
-    return 2 * utils.get_word_len()
+    return 2 * utils.WORD_LEN
 
 def get_RECORD_TYPEINFO_OFFSET():
-    return utils.get_word_len()
+    return utils.WORD_LEN
 
 # class_type_info consts
 def get_CLASS_TYPE_TYPEINFO_OFFSET():
     return 0
 
 def get_CLASS_TYPE_NAME_OFFSET():
-    return utils.get_word_len()
+    return utils.WORD_LEN
 
 def get_CLASS_TYPE_SIZE():
-    return 2 * utils.get_word_len()
+    return 2 * utils.WORD_LEN
 
 # si_class_type_info consts
 def get_SI_TYPEINFO_BASE_OFFSET():
@@ -174,10 +174,10 @@ def get_BASE_CLASS_TYPEINFO_OFFSET():
     return 0
 
 def get_BASE_CLASS_ATTRS_OFFSET():
-    return get_BASE_CLASS_TYPEINFO_OFFSET() + utils.get_word_len()
+    return get_BASE_CLASS_TYPEINFO_OFFSET() + utils.WORD_LEN
 
 def get_BASE_CLASS_SIZE():
-    return utils.get_word_len() * 2
+    return utils.WORD_LEN * 2
 
 
 class GccRTTIParser(RTTIParser):
@@ -306,7 +306,7 @@ class GccRTTIParser(RTTIParser):
         return class_name
 
     def try_parse_vtable(self, ea):
-        functions_ea = ea + utils.get_word_len()
+        functions_ea = ea + utils.WORD_LEN
         func_ea, _ = cpp_utils.get_vtable_line(
             functions_ea,
             ignore_list=self.types,

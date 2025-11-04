@@ -9,6 +9,7 @@ import ida_typeinf
 import ida_nalt
 import ida_xref
 import ida_idaapi
+import idaapi
 import idautils
 import idc
 from ida_idaapi import BADADDR
@@ -25,6 +26,7 @@ VTABLE_INSTANCE_DELIMITER = VTABLE_DELIMITER
 VTABLE_INSTANCE_KEYWORD = "vftable"
 VTABLE_INSTANCE_POSTFIX = VTABLE_INSTANCE_DELIMITER + VTABLE_INSTANCE_KEYWORD
 MF_BASECLASS = 0x400
+PURE_VIRTUAL_NAME = '__cxa_pure_virtual'
 
 
 def get_vtable_instance_name(class_name, parent_name=None):
@@ -38,20 +40,21 @@ def get_base_member_name(parent_name, offset):
     return "%s_%X" % (parent_name, offset)
 
 
-def get_vtable_line(ea, stop_ea=None, ignore_list=None, pure_virtual_name=None):
+def get_vtable_line(ea, stop_ea=None, ignore_list=None, pure_virtual_name=PURE_VIRTUAL_NAME):
+    if stop_ea is not None and ea >= stop_ea:
+        return None, 0
     if ignore_list is None:
         ignore_list = []
     func_ea = utils.get_ptr(ea)
-    if not utils.is_func_start(func_ea):
-        func_ea -= 1 # ARM: function pointers point to func_start+1
-    if not utils.is_func_start(func_ea):
-        return None, 0
-    if stop_ea is not None and ea >= stop_ea:
+    if func_ea in ignore_list:
         return None, 0
     is_pure_func = pure_virtual_name is not None and idc.GetDisasm(ea).endswith(pure_virtual_name)
-    if func_ea in ignore_list and not is_pure_func:
-        return None, 0
-    return func_ea, ea + utils.get_word_len()
+    if not is_pure_func:
+        if not utils.is_func(func_ea):
+            func_ea -= 1 # ARM: function pointers point to func_start+1
+        if not utils.is_func(func_ea):
+            return None, 0
+    return func_ea, ea + utils.WORD_LEN
 
 
 def is_valid_vtable_name(member_name):
@@ -117,7 +120,7 @@ def find_vtable_at_offset(struct_ptr: ida_typeinf.tinfo_t, vtable_offset: int):
         )
         _, member = current_struct.get_udm_by_offset(vtable_offset - current_offset)
         if member is None:
-            log.exception(
+            logging.exception(
                 "Couldn't find vtable at offset %d for %d",
                 vtable_offset - current_offset,
                 struct_ptr.get_tid(),
@@ -192,7 +195,7 @@ def install_vtables_union(
     vtables_union_id = utils.get_or_create_struct_id(vtables_union_name, True)
     vtable_member_tinfo = utils.get_typeinf(old_vtable_class_name + "_orig")
     if vtables_union_id == BADADDR:
-        log.exception(
+        logging.exception(
             "Cannot create union vtable for %s()%s",
             class_name,
             vtables_union_name,
@@ -202,7 +205,7 @@ def install_vtables_union(
 
     vtables_union = ida_typeinf.tinfo_t(tid=vtables_union_id)
     if not vtables_union:
-        log.exception("Could retrieve vtables union for %s", class_name)
+        logging.exception("Could retrieve vtables union for %s", class_name)
         # FIXME: return -1?
     if vtable_member_tinfo is not None:
         vtables_union_vtable_field_name = get_class_vtables_field_name(class_name)
@@ -236,7 +239,7 @@ def install_vtables_union(
 
 
 def add_child_vtable(parent_name, child_name, child_vtable_id, offset):
-    log.debug(
+    logging.debug(
         "add_child_vtable (%s, %s, %d)",
         parent_name,
         child_name,
@@ -256,11 +259,11 @@ def add_child_vtable(parent_name, child_name, child_vtable_id, offset):
         or (parent_vtable_struct.get_tid() != pointed_struct.get_tid())
     ):
         parent_vtable_member = None
-        log.debug("Not a struct vtable: %s", str(vtable_member_tinfo))
+        logging.debug("Not a struct vtable: %s", str(vtable_member_tinfo))
 
     # TODO: Check that struct is a valid vtable by name
     if not parent_vtable_struct.is_union():
-        log.debug("%s vtable isn't union -> unionize it!", parent_name)
+        logging.debug("%s vtable isn't union -> unionize it!", parent_name)
         parent_vtable_struct = install_vtables_union(
             parent_name, parent_vtable_member, vtable_member_tinfo, offset
         )
@@ -285,29 +288,34 @@ def add_child_vtable(parent_name, child_name, child_vtable_id, offset):
 
 def update_func_name_with_class(func_ea, class_name):
     name = idc.get_name(func_ea)
-    if name.startswith("?") and (demangled := ida_name.demangle_name(name, idaapi.MNG_SHORT_FORM)):
+    if (demangled := ida_name.demangle_name(name, idaapi.MNG_SHORT_FORM)):
         # 'sentry::Sentry::getDongleIds(sentry::DongleIdList *)' => 'getDongleIds'
         name = demangled.split("(",2)[0].split("::")[-1]
-        if name.startswith("~"):
-            name = "dtor"
+    if "::" in name: # not demangled name may have '::' ?
+        name = name.split("::")[-1]
+    if name.startswith("~"):
+        name = "dtor"
     if name.startswith("sub_"):
         new_name = class_name + VTABLE_DELIMITER + name
         return utils.set_func_name(func_ea, new_name), True
     return name, False
 
 
-def update_func_this(func_ea, this_type=None):
+def update_func_this(func_ea, this_type=None, flags=ida_typeinf.TINFO_DEFINITE):
     functype = None
     try:
         func_details = utils.get_func_details(func_ea)
         logging.info(f"{func_details=}")
         if func_details is None:
             return None
+        cc = func_details.get_explicit_cc()
+        if cc != idaapi.CM_CC_THISCALL and cc != idaapi.CM_CC_FASTCALL:
+            return None
         if this_type:
             if len(func_details) > 0:
                 func_details[0].name = "this"
                 func_details[0].type = this_type
-        functype = utils.update_func_details(func_ea, func_details)
+        functype = utils.update_func_details(func_ea, func_details, flags)
         logging.info(f"{functype=}")
     except ida_hexrays.DecompilationFailure as e:
         logging.exception("Couldn't decompile 0x%x", func_ea)
@@ -324,7 +332,7 @@ def add_class_vtable(struct_ptr, vtable_name, offset=BADADDR, vtable_field_name=
         struct_ptr, vtable_field_name, vtable_type_ptr, offset, overwrite=True
     )
     if new_member is None:
-        log.warning(
+        logging.warning(
             "vtable of %s couldn't added at offset 0x%X",
             str(vtable_type_ptr),
             offset,
@@ -399,7 +407,7 @@ def make_funcptr_pt(func, this_type):
     return utils.get_typeinf("void (*)(%s *)" % str(this_type))
 
 
-def fix_userpurge(funcea, flags=idc.TINFO_DEFINITE):
+def fix_userpurge(funcea, flags=ida_typeinf.TINFO_DEFINITE):
     """@return: True if __userpurge calling conv was found and fixed at funcea, otherwise False"""
     funcea = utils.get_func_start(funcea)
     if funcea == BADADDR:
@@ -416,7 +424,7 @@ def fix_userpurge(funcea, flags=idc.TINFO_DEFINITE):
     typestr = re.sub(r"\@\<\w+\>", "", typestr)
     py_type = idc.parse_decl(typestr, idc.PT_SILENT)
     if not py_type:
-        log.warn("%08X Failed to fix userpurge", funcea)
+        logging.warn("%08X Failed to fix userpurge", funcea)
         return False
     return idc.apply_type(funcea, py_type[1:], flags)
 
@@ -430,7 +438,6 @@ def update_vtable_struct(
     vtable_head=None,
     ignore_list=None,
     add_dummy_member=False,
-    pure_virtual_name=None,
     parent_name=None,
     add_func_this=True,
     force_rename_vtable_head=False,  # rename vtable head even if it is already named by IDA
@@ -442,22 +449,22 @@ def update_vtable_struct(
         this_type = utils.get_typeinf_ptr(class_name)
     if not add_func_this:
         this_type = None
-    func_ea, next_func = get_next_func_callback(
+    func, next_func = get_next_func_callback(
         functions_ea,
         ignore_list=ignore_list,
-        pure_virtual_name=pure_virtual_name,
     )
     dummy_i = 1
     function_count = 0
     while func is not None:
-        new_func_name, is_name_changed = update_func_name_with_class(func, class_name)
+        new_func_name, _ = update_func_name_with_class(func, class_name)
+        new_field_name = new_func_name.split(VTABLE_DELIMITER)[-1]
         func_ptr = None
         if ida_hexrays.init_hexrays_plugin():
-            fix_userpurge(func_ea, idc.TINFO_GUESSED)
-            update_func_this(func_ea, this_type, idc.TINFO_GUESSED)
-            func_ptr = utils.get_typeinf_ptr(utils.get_func_tinfo(func_ea))
+            fix_userpurge(func, ida_typeinf.TINFO_GUESSED)
+            update_func_this(func, this_type, ida_typeinf.TINFO_GUESSED)
+            func_ptr = utils.get_typeinf_ptr(utils.get_func_tinfo(func))
         else:
-            func_ptr = make_funcptr_pt(func_ea, this_type)  # TODO: maybe try to get or guess type?
+            func_ptr = make_funcptr_pt(func, this_type)  # TODO: maybe try to get or guess type?
         if add_dummy_member:
             utils.add_to_struct(vtable_struct, "dummy_%d" % dummy_i, func_ptr)
             dummy_i += 1
@@ -466,26 +473,30 @@ def update_vtable_struct(
         if function_count == 0:
             # We did an hack for vtables contained in union vtable with one dummy member
             _, ptr_member = utils.add_to_struct(
-                vtable_struct, new_func_name, func_ptr, 0, overwrite=True
+                vtable_struct, new_field_name, func_ptr, 0, overwrite=True
             )
         else:
             _, ptr_member = utils.add_to_struct(
                 vtable_struct,
-                new_func_name,
+                new_field_name,
                 func_ptr,
                 function_count * utils.WORD_LEN * utils.BYTE_SIZE,
-                is_offset=True
+                is_offset=True,
+                overwrite=True
             )
         if ptr_member is None:
-            log.error(
+            logging.error(
                 "Couldn't add %s(%s) to vtable struct 0x%X at offset 0x%X",
-                new_func_name,
+                new_field_name,
                 str(func_ptr),
                 vtable_struct.get_tid(),
             )
         ida_xref.add_dref(ptr_member.type.get_tid(), func, ida_xref.XREF_USER | ida_xref.dr_I)
+        field_idx = vtable_struct.find_udm(ptr_member, 0)
+        field_cmt = f"{func:08x}"
+        vtable_struct.set_udm_cmt(field_idx, field_cmt, False)
         func, next_func = get_next_func_callback(
-            next_func, ignore_list=ignore_list, pure_virtual_name=pure_virtual_name
+            next_func, ignore_list=ignore_list
         )
         function_count += 1
 
@@ -544,7 +555,7 @@ def get_overriden_func_names(union_name, offset, get_not_funcs_members=False):
             continue
         cls = member.name
         tinfo = utils.get_member_tinfo(member)
-        log.debug("Trying %s", cls)
+        logging.debug("Trying %s", cls)
         if cls == get_interface_empty_vtable_name() or not tinfo.is_ptr():
             continue
         pointed_obj = tinfo.get_pointed_object()
@@ -575,30 +586,18 @@ def set_polymorhpic_func_name(union_name, offset, name, force=False):
                 if new_func_name != "":
                     new_func_name += VTABLE_DELIMITER
                 new_func_name += name
-                log.debug("%08X -> %s", ea, new_func_name)
+                logging.debug("%08X -> %s", ea, new_func_name)
                 utils.set_func_name(ea, new_func_name)
 
 
-def create_class(class_name, has_vtable, parent_class=None):
-    udt = ida_typeinf.udt_type_data_t()
-    type_info = ida_typeinf.tinfo_t()
-    udt.is_union = False
-    if (
-        type_info.create_udt(udt) and
-        type_info.set_named_type(None, class_name) == ida_typeinf.TERR_OK
-    ):
-        return type_info
-    return None
-
-
 def create_vtable_struct(sptr, name, vtable_offset, parent_name=None):
-    log.debug("create_vtable_struct(%s, 0x%X)", name, vtable_offset)
+    logging.debug("create_vtable_struct(%s, 0x%X)", name, vtable_offset)
     vtable_details = find_vtable_at_offset(sptr, vtable_offset)
     parent_vtable_member = None
     parent_vtable_struct = None
     parents_chain = None
     if vtable_details is not None:
-        log.debug("Found parent vtable %s 0x%X", name, vtable_offset)
+        logging.debug("Found parent vtable %s 0x%X", name, vtable_offset)
         (
             parent_vtable_member,
             parent_vtable_struct,
@@ -614,7 +613,7 @@ def create_vtable_struct(sptr, name, vtable_offset, parent_name=None):
     else:
         this_type = utils.get_typeinf_ptr(parent_name)
     if vtable_name is None:
-        log.exception(
+        logging.exception(
             "create_vtable_struct(%s, 0x%X): vtable_name is" " None",
             name,
             vtable_offset,
@@ -639,7 +638,7 @@ def make_struct(name, struct_size):
     mt.tid = struct_id
     cur_size = ida_struct.get_struc_size(struct_id)
     while cur_size < struct_size:
-        if struct_size - cur_size >= 8 and utils.get_word_len() == 8:
+        if struct_size - cur_size >= 8 and utils.WORD_LEN == 8:
             r = ida_struct.add_struc_member(
                 struc,
                 "field_" + format(cur_size, "X"),
@@ -731,7 +730,7 @@ def add_baseclass(class_name, baseclass_name, baseclass_offset=0, to_refresh=Fal
                                  offset=baseclass_offset,
                                  overwrite=True)
     if not member:
-        log.debug(
+        logging.debug(
             "add_baseclass(%s. %s): member not found",
             class_name,
             baseclass_name,
