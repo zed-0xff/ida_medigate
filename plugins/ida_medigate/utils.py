@@ -134,6 +134,11 @@ def get_func_type(funcea):
             "Couldn't decompile func at %08X: %s, getting or guessing func type from ea", funcea, ex
         )
         return get_or_guess_tinfo(funcea)
+    except AttributeError as ex:
+        logging.warn(
+            "Couldn't decompile func at %08X: %s, getting or guessing func type from ea", funcea, ex
+        )
+        return get_or_guess_tinfo(funcea)
 
 
 def get_func_tinfo(funcea):

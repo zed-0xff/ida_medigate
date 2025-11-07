@@ -286,18 +286,22 @@ def add_child_vtable(parent_name, child_name, child_vtable_id, offset):
     ida_xref.add_dref(new_member.id, child_vtable_id, ida_xref.XREF_USER | ida_xref.dr_O)
 
 
-def update_func_name_with_class(func_ea, class_name):
+def update_func_name_with_class(func_ea, class_name, force=False):
     name = idc.get_name(func_ea)
-    if (demangled := ida_name.demangle_name(name, idaapi.MNG_SHORT_FORM)):
-        # 'sentry::Sentry::getDongleIds(sentry::DongleIdList *)' => 'getDongleIds'
-        name = demangled.split("(",2)[0].split("::")[-1]
-    if "::" in name: # not demangled name may have '::' ?
-        name = name.split("::")[-1]
-    if name.startswith("~"):
-        name = "dtor"
     if name.startswith("sub_"):
         new_name = class_name + VTABLE_DELIMITER + name
         return utils.set_func_name(func_ea, new_name), True
+    if force:
+        if (demangled := ida_name.demangle_name(name, idaapi.MNG_SHORT_FORM)):
+            # 'sentry::Sentry::getDongleIds(sentry::DongleIdList *)' => 'getDongleIds'
+            name = demangled.split("(",2)[0].split("::")[-1]
+        if "::" in name: # not demangled name may have '::'
+            name = name.split("::")[-1]
+        if name.startswith("sub_"):
+            new_name = class_name + VTABLE_DELIMITER + name
+            return utils.set_func_name(func_ea, new_name), True
+#    if name.startswith("~"):
+#        name = "dtor"
     return name, False
 
 
@@ -429,6 +433,17 @@ def fix_userpurge(funcea, flags=ida_typeinf.TINFO_DEFINITE):
     return idc.apply_type(funcea, py_type[1:], flags)
 
 
+def funcname2fieldname(name):
+    if (demangled := ida_name.demangle_name(name, idaapi.MNG_SHORT_FORM)):
+        # 'sentry::Sentry::getDongleIds(sentry::DongleIdList *)' => 'getDongleIds'
+        name = demangled.split("(",2)[0].split(VTABLE_DELIMITER)[-1]
+    if "::" in name: # not demangled name may have '::' ?
+        name = name.split("::")[-1]
+    if name.startswith("~"):
+        name = "dtor"
+    return name
+
+
 def update_vtable_struct(
     functions_ea,
     vtable_struct,
@@ -441,7 +456,7 @@ def update_vtable_struct(
     parent_name=None,
     add_func_this=True,
     force_rename_vtable_head=False,  # rename vtable head even if it is already named by IDA
-    # if it's not named, then it will be renamed anyway
+    force_rename=False,              # rename methods even if them alaready been named
 ):
     # pylint: disable=too-many-arguments,too-many-locals,too-many-branches
     # TODO: refactor
@@ -456,8 +471,8 @@ def update_vtable_struct(
     dummy_i = 1
     function_count = 0
     while func is not None:
-        new_func_name, _ = update_func_name_with_class(func, class_name)
-        new_field_name = new_func_name.split(VTABLE_DELIMITER)[-1]
+        new_func_name, _ = update_func_name_with_class(func, class_name, force=force_rename)
+        new_field_name = funcname2fieldname(new_func_name)
         func_ptr = None
         if ida_hexrays.init_hexrays_plugin():
             fix_userpurge(func, ida_typeinf.TINFO_GUESSED)
@@ -633,33 +648,40 @@ def create_vtable_struct(sptr, name, vtable_offset, parent_name=None):
 
 def make_struct(name, struct_size):
     struc = utils.get_or_create_struct(name)
-    struct_id = ida_struct.get_struc_id(name)
-    mt = idaapi.opinfo_t()
-    mt.tid = struct_id
-    cur_size = ida_struct.get_struc_size(struct_id)
+    cur_size = struc.get_size()
+    if cur_size == 1 and struc.get_udm(0)[0] == -1:
+        # empty struct get_size() returns 1
+        cur_size = 0
+
+    bt_int64 = ida_typeinf.tinfo_t(ida_typeinf.BT_INT64)
+    bt_int32 = ida_typeinf.tinfo_t(ida_typeinf.BT_INT32)
+    bt_int16 = ida_typeinf.tinfo_t(ida_typeinf.BT_INT16)
+    bt_int08 = ida_typeinf.tinfo_t(ida_typeinf.BT_INT8)
+
     while cur_size < struct_size:
+        field_name = "field_" + format(cur_size, "X")
+        cur_offset = cur_size * utils.BYTE_SIZE
+
         if struct_size - cur_size >= 8 and utils.WORD_LEN == 8:
-            r = ida_struct.add_struc_member(
-                struc,
-                "field_" + format(cur_size, "X"),
-                cur_size, # offset of a new member
-                idaapi.FF_QWORD,
-                mt,
-                8
-            )
+            r = utils.add_to_struct(struc, field_name, bt_int64, cur_offset)
+            cur_size += 8
+
         elif struct_size - cur_size >= 4:
-            r = ida_struct.add_struc_member(struc, "field_" + format(cur_size, "X"), cur_size, idaapi.FF_DWORD, mt, 4)
+            r = utils.add_to_struct(struc, field_name, bt_int32, cur_offset)
+            cur_size += 4
 
         elif struct_size - cur_size >= 2:
-            r = ida_struct.add_struc_member(struc, "field_" + format(cur_size, "X"), cur_size, idaapi.FF_WORD, mt, 2)
+            r = utils.add_to_struct(struc, field_name, bt_int16, cur_offset)
+            cur_size += 2
 
         elif struct_size - cur_size == 1:
-            r = ida_struct.add_struc_member(struc, "field_" + format(cur_size, "X"), cur_size, idaapi.FF_BYTE, mt, 1)
+            r = utils.add_to_struct(struc, field_name, bt_int08, cur_offset)
+            cur_size += 1
 
-        if r != 0:
+        if not r:
             break
-        cur_size = ida_struct.get_struc_size(struct_id)
     return cur_size
+
 
 def find_structs_by_size(size = None, min_size: int = 0, ignore_prefixes: list = []):
     """
@@ -700,6 +722,7 @@ def make_vtable(
     parent_name=None,
     add_func_this=True,
     _get_vtable_line=get_vtable_line,
+    force_rename=False,
 ):
     if not vtable_ea and not vtable_ea_stop:
         vtable_ea, vtable_ea_stop = utils.get_selected_range_or_line()
@@ -707,6 +730,8 @@ def make_vtable(
         utils.get_or_create_struct(class_name), class_name, offset_in_class * utils.BYTE_SIZE,
         parent_name=parent_name
     )
+    if struct_size:
+        make_struct(class_name, struct_size)
     logging.info(f"{vtable_ea=}, {vtable_ea_stop=}, ")
     update_vtable_struct(
         vtable_ea,
@@ -716,6 +741,7 @@ def make_vtable(
         get_next_func_callback=partial(_get_vtable_line, stop_ea=vtable_ea_stop),
         parent_name=parent_name,
         add_func_this=add_func_this,
+        force_rename=force_rename,
     )
 
 
