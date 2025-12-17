@@ -321,7 +321,8 @@ def update_func_this(func_ea, this_type=None, flags=ida_typeinf.TINFO_DEFINITE, 
         if cc != idaapi.CM_CC_THISCALL and cc != idaapi.CM_CC_FASTCALL:
             return None
         if this_type and len(func_details) > 0:
-            if func_details[0].name == 'this' and not overwrite:
+            orig_this_type = func_details[0].type
+            if not overwrite and orig_this_type.is_ptr() and orig_this_type.get_pointed_object().is_struct():
                 return None
             func_details[0].name = "this"
             func_details[0].type = this_type
