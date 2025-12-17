@@ -796,3 +796,212 @@ def add_baseclass(class_name, baseclass_name, baseclass_offset=0, to_refresh=Fal
     if to_refresh:
         utils.refresh_struct(struct_ptr)
     return True
+
+
+@batchmode
+def scan_all_vtables():
+    """Scan all existing vtable structs and add missing references from members to function EAs.
+    
+    This function:
+    1. Finds all structs that are vtables (by checking if name contains VTABLE_POSTFIX)
+    2. For each vtable struct, iterates through all members
+    3. For each member that has a comment with an EA, checks if a reference exists
+    4. If no reference exists, adds a cross-reference from the member to the function EA
+    
+    Returns:
+        tuple: (total_vtables_processed, total_references_added)
+    """
+    logging.info("Starting scan for missing vtable member references...")
+    
+    total_vtables_processed = 0
+    total_references_added = 0
+    
+    # Iterate over all structures in IDA using idautils.Structs()
+    for ordinal, sid, struct_name in idautils.Structs():
+        if sid == BADADDR:
+            continue
+        
+        # Get struct as tinfo_t to use our helper functions
+        vtable_struct = ida_typeinf.tinfo_t()
+        if not vtable_struct.get_type_by_tid(sid):
+            continue
+        
+        # Check if this is a vtable struct
+        if not is_struct_vtable(vtable_struct):
+            continue
+        
+        # Get struct size - check for None or BADADDR
+        struct_size = vtable_struct.get_size()
+        if struct_size is None or struct_size == BADADDR or struct_size == 0:
+            logging.debug("Skipping vtable struct %s: invalid size (%s)", struct_name, struct_size)
+            continue
+        
+        total_vtables_processed += 1
+        logging.debug("Processing vtable struct: %s (size: %d)", struct_name, struct_size)
+        
+        # Get all members using get_udt_details() - more reliable than iterating by offset
+        udt = ida_typeinf.udt_type_data_t()
+        if not vtable_struct.get_udt_details(udt):
+            logging.debug("Could not get UDT details for %s", struct_name)
+            continue
+        
+        # Iterate through all members
+        for member_idx, member in enumerate(udt):
+            try:
+                # Skip gap members
+                if member.is_gap():
+                    continue
+                
+                # Get member ID using idc.get_member_id() - this is the same method IDA uses internally
+                # Convert offset from bits to bytes for idc.get_member_id()
+                struct_tid = vtable_struct.get_tid()
+                member_offset_bytes = member.offset // utils.BYTE_SIZE
+                member_tid = idc.get_member_id(struct_tid, member_offset_bytes)
+                
+                if member_tid == -1 or member_tid == BADADDR:
+                    logging.debug(
+                        "Could not get member ID for member %d (offset 0x%X bytes) in %s (struct_tid: 0x%X)",
+                        member_idx,
+                        member_offset_bytes,
+                        struct_name,
+                        struct_tid
+                    )
+                    continue
+                
+                # Check if member is a function pointer
+                if not member.type.is_funcptr():
+                    continue
+                
+                # Try to get the function EA from the member comment
+                # Comments are set in format: f"{func:08x}"
+                # Try to get comment from udm_t object first, then fallback to idc.get_member_cmt()
+                member_cmt = None
+                if hasattr(member, 'cmt') and member.cmt:
+                    member_cmt = member.cmt
+                else:
+                    # Fallback: use idc.get_member_cmt() with struct TID and member offset
+                    member_offset_bytes = member.offset // utils.BYTE_SIZE
+                    member_cmt = idc.get_member_cmt(vtable_struct.get_tid(), member_offset_bytes, False)
+                
+                func_ea = None
+                
+                if member_cmt:
+                    # Try to parse the EA from the comment (format: "08x" hex string)
+                    try:
+                        func_ea = int(member_cmt, 16)
+                        if func_ea == 0 or func_ea == BADADDR:
+                            func_ea = None
+                    except (ValueError, TypeError):
+                        pass
+                
+                # If we don't have an EA from comment, try to find vtable instance
+                # and read the function pointer from memory
+                if func_ea is None:
+                    func_ea = _find_func_ea_from_vtable_instance(struct_name, member.offset)
+                
+                if func_ea is None or func_ea == BADADDR:
+                    continue
+                
+                # Verify member_tid is actually a member ID (not a struct ID or other type)
+                # Member IDs should be valid and point to a struct member
+                if not idc.is_member_id(member_tid):
+                    logging.warning(
+                        "member_tid 0x%X for %s.%s is not a valid member ID, skipping",
+                        member_tid,
+                        struct_name,
+                        member.name if member.name else f"offset_{member.offset}"
+                    )
+                    continue
+                
+                # Always delete any existing xref first to ensure we create a fresh, correct one
+                # This fixes cases where xrefs were created with incorrect member_tid
+                ida_xref.del_dref(member_tid, func_ea)
+                
+                # Add the correct reference from the member to the function
+                if ida_xref.add_dref(member_tid, func_ea, ida_xref.XREF_USER | ida_xref.dr_I):
+                        total_references_added += 1
+                        logging.debug(
+                            "Added xref from %s.%s (offset 0x%X) to function at 0x%X",
+                            struct_name,
+                            member.name if member.name else f"offset_{member.offset}",
+                            member.offset,
+                            func_ea
+                        )
+                else:
+                    logging.warning(
+                        "Failed to add xref from %s.%s to 0x%X",
+                        struct_name,
+                        member.name if member.name else f"offset_{member.offset}",
+                        func_ea
+                    )
+                    
+            except Exception as e:
+                logging.exception(
+                    "Error processing member %d (offset 0x%X) in vtable struct %s: %s",
+                    member_idx,
+                    member.offset if member else 0,
+                    struct_name,
+                    e
+                )
+                continue
+    
+    logging.info(
+        "Completed scan: processed %d vtable structs, added %d missing references",
+        total_vtables_processed,
+        total_references_added
+    )
+    
+    return total_vtables_processed, total_references_added
+
+
+def _find_func_ea_from_vtable_instance(vtable_struct_name, member_offset):
+    """Try to find the function EA by locating a vtable instance and reading the pointer.
+    
+    Args:
+        vtable_struct_name: Name of the vtable struct
+        member_offset: Offset of the member in the struct (in bits, need to convert to bytes)
+    
+    Returns:
+        Function EA if found, None otherwise
+    """
+    # Extract class name from vtable struct name (remove VTABLE_POSTFIX)
+    if VTABLE_POSTFIX not in vtable_struct_name:
+        return None
+    
+    class_name = vtable_struct_name.replace(VTABLE_POSTFIX, "")
+    # Handle offset-based vtable names like "Class_0004_vtbl"
+    if "_" in class_name:
+        parts = class_name.rsplit("_", 1)
+        if len(parts) == 2 and len(parts[1]) == 4:
+            try:
+                int(parts[1], 16)  # Check if it's a hex offset
+                class_name = parts[0]
+            except ValueError:
+                pass
+    
+    # Try to find vtable instance by name
+    vtable_instance_name = get_vtable_instance_name(class_name)
+    vtable_ea = ida_name.get_name_ea(BADADDR, vtable_instance_name)
+    
+    if vtable_ea == BADADDR:
+        # Try with parent name variations
+        # This is a best-effort approach
+        return None
+    
+    # Convert member offset from bits to bytes
+    member_offset_bytes = member_offset // utils.BYTE_SIZE
+    
+    # Read the function pointer from the vtable instance
+    try:
+        func_ea = utils.get_ptr(vtable_ea + member_offset_bytes)
+        if func_ea and func_ea != BADADDR:
+            # Adjust for ARM thumb mode if needed
+            if not utils.is_func(func_ea):
+                func_ea -= 1
+                if not utils.is_func(func_ea):
+                    return None
+            return func_ea
+    except Exception:
+        pass
+    
+    return None
