@@ -373,6 +373,58 @@ def _extract_class_name_from_vtable(vtable_struct_name):
     return class_name
 
 
+def _print_operations_table(operations):
+    """Print a table of operations with automatically calculated column widths.
+    
+    Args:
+        operations: List of tuples (op_type, target, current, new, label)
+    """
+    if not operations:
+        return
+    
+    # Calculate column widths from data (limit to 64 chars max)
+    max_type_width = min(64, max(len(str(op[0])) for op in operations))
+    max_target_width = min(64, max(len(str(op[1])) for op in operations))
+    max_current_width = min(64, max(len(str(op[2])) for op in operations))
+    max_new_width = min(64, max(len(str(op[3])) for op in operations))
+    
+    # Ensure minimum widths for readability
+    max_type_width = max(max_type_width, 8)
+    max_target_width = max(max_target_width, 8)
+    max_current_width = max(max_current_width, 8)
+    max_new_width = max(max_new_width, 8)
+    
+    # Print table rows
+    for op_type, target, current, new, label in operations:
+        # Truncate values if needed (leave 2 chars for "..")
+        type_str = str(op_type)
+        if len(type_str) > max_type_width:
+            type_display = type_str[:max_type_width-2] + ".."
+        else:
+            type_display = type_str
+        
+        target_str = str(target)
+        if len(target_str) > max_target_width:
+            target_display = target_str[:max_target_width-2] + ".."
+        else:
+            target_display = target_str
+        
+        current_str = str(current)
+        if len(current_str) > max_current_width:
+            current_display = current_str[:max_current_width-2] + ".."
+        else:
+            current_display = current_str
+        
+        new_str = str(new)
+        if len(new_str) > max_new_width:
+            new_display = new_str[:max_new_width-2] + ".."
+        else:
+            new_display = new_str
+        
+        label_str = f" ({label})" if label else ""
+        print(f"[.] rename  {type_display:<{max_type_width}}  {target_display:<{max_target_width}}  {current_display:<{max_current_width}} -> {new_display:<{max_new_width}}{label_str}")
+
+
 def _add_vtable_member_rename(vtable_tif, member_idx, member_name, new_field_name, 
                                args_list, processed_classes, class_tid, member_offset, 
                                relation_label=""):
@@ -397,17 +449,13 @@ def _add_vtable_member_rename(vtable_tif, member_idx, member_name, new_field_nam
         return False
     
     processed_classes.add(class_key)
-    vtable_name = vtable_tif.get_type_name()
-    label_str = f" ({relation_label})" if relation_label else ""
-    left_part = f"[.] {vtable_name}.{member_name}"
-    print(f"{left_part:<64} -> {new_field_name}{label_str}")
     args_list.append([vtable_tif, member_idx, new_field_name])
     return True
 
 
 def _process_related_class_vtable(related_class_tif, member_offset, 
                                    new_field_name, args_list, processed_classes, 
-                                   relation_label):
+                                   relation_label, member_rename_info=None):
     """Process vtable member in a related class (superclass or subclass).
     
     Args:
@@ -417,32 +465,44 @@ def _process_related_class_vtable(related_class_tif, member_offset,
         args_list: List to append rename operations to
         processed_classes: Set of (class_tid, offset) tuples already processed
         relation_label: Label for the relation (e.g., "superclass", "subclass")
+        member_rename_info: Optional list to track member renames for table display
+    
+    Returns:
+        tuple: (vtable_tif, member_tid) if member was found, (None, None) otherwise
     """
     related_class_name = related_class_tif.get_type_name()
     related_vtable_name = get_class_vtable_struct_name(related_class_name, 0)
     related_vtable_tif = ida_typeinf.tinfo_t(name=related_vtable_name)
     
     if not related_vtable_tif.is_udt():
-        return
+        return None, None
     
     related_member_idx, related_member = related_vtable_tif.get_udm_by_offset(member_offset)
     if related_member_idx != -1:
         related_class_tid = related_class_tif.get_tid()
-        _add_vtable_member_rename(
+        if _add_vtable_member_rename(
             related_vtable_tif, related_member_idx, related_member.name,
             new_field_name, args_list, processed_classes, related_class_tid,
             member_offset, relation_label
-        )
+        ) and member_rename_info is not None:
+            member_rename_info.append((related_vtable_tif, related_member_idx, related_member.name, new_field_name))
+        
+        # Return vtable and member TID for function renaming tracking
+        member_tid = related_vtable_tif.get_udm_tid(related_member_idx)
+        return related_vtable_tif, member_tid
+    
+    return None, None
 
 
 def post_func_name_change(new_name, ea):
-    """Handle function name change by updating related vtable struct members.
+    """Handle function name change by updating related vtable struct members and functions.
     
     When a function is renamed, this function:
     1. Finds all struct members that reference this function (via data xrefs)
     2. Extracts the last part of the function name (after splitting by VTABLE_DELIMITER)
     3. Converts it to a field name and renames the struct members
     4. Also renames corresponding members in superclasses and subclasses (basic inheritance at offset 0)
+    5. After renaming vtable members, also renames functions pointed by those members
     
     Args:
         new_name: The new function name (may contain VTABLE_DELIMITER like "Class::method")
@@ -451,12 +511,17 @@ def post_func_name_change(new_name, ea):
     Returns:
         tuple: (function_to_call, list_of_args) for batch processing
     """
+    logging.info(f"post_func_name_change: Called with new_name={new_name}, ea={hex(ea)}")
     new_field_name = funcname2fieldname(new_name)
     ref_eas = idautils.DataRefsTo(ea)
     
     args_list = []
     processed_members = set()
     processed_classes = set()
+    # Track vtable members we're renaming so we can rename their functions afterwards
+    renamed_member_info = []  # List of (vtable_tif, member_tid, member_offset, new_field_name, class_name)
+    # Track member names for table display: (vtable_tif, member_idx, current_name, new_name)
+    member_rename_info = []
     
     for sid in ref_eas:
         if sid in processed_members:
@@ -477,39 +542,60 @@ def post_func_name_change(new_name, ea):
         
         # If we can't extract class name or get class struct, just process this member
         if not class_name:
-            _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
-                                     args_list, processed_classes, vtable_tif.get_tid(),
-                                     member_offset)
+            if _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
+                                         args_list, processed_classes, vtable_tif.get_tid(),
+                                         member_offset):
+                member_rename_info.append((vtable_tif, idx, udm.name, new_field_name))
+            # Track this member for function renaming
+            renamed_member_info.append((vtable_tif, sid, member_offset, new_field_name, None))
             continue
         
         class_tif = ida_typeinf.tinfo_t(name=class_name)
         if not class_tif.is_udt():
-            _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
-                                     args_list, processed_classes, vtable_tif.get_tid(),
-                                     member_offset)
+            if _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
+                                         args_list, processed_classes, vtable_tif.get_tid(),
+                                         member_offset):
+                member_rename_info.append((vtable_tif, idx, udm.name, new_field_name))
+            renamed_member_info.append((vtable_tif, sid, member_offset, new_field_name, None))
             continue
         
         class_tid = class_tif.get_tid()
         if class_tid == BADADDR:
-            _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
-                                     args_list, processed_classes, vtable_tif.get_tid(),
-                                     member_offset)
+            if _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
+                                         args_list, processed_classes, vtable_tif.get_tid(),
+                                         member_offset):
+                member_rename_info.append((vtable_tif, idx, udm.name, new_field_name))
+            renamed_member_info.append((vtable_tif, sid, member_offset, new_field_name, None))
             continue
         
         # Process the original member
-        if not _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
-                                         args_list, processed_classes, class_tid,
-                                         member_offset):
-            continue
+        if _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
+                                     args_list, processed_classes, class_tid,
+                                     member_offset):
+            member_rename_info.append((vtable_tif, idx, udm.name, new_field_name))
+        
+        # Track this member for function renaming
+        renamed_member_info.append((vtable_tif, sid, member_offset, new_field_name, class_name))
         
         # Find and process superclasses (base classes at offset 0)
         for base_udm in class_tif.iter_udt():
             if base_udm.is_baseclass() and base_udm.offset == 0:
                 base_class_tif = base_udm.type
+                base_class_name = base_class_tif.get_type_name()
                 _process_related_class_vtable(
                     base_class_tif, member_offset, new_field_name,
-                    args_list, processed_classes, "superclass"
+                    args_list, processed_classes, "superclass", member_rename_info
                 )
+                # Track superclass member for function renaming
+                base_vtable_name = get_class_vtable_struct_name(base_class_name, 0)
+                base_vtable_tif = ida_typeinf.tinfo_t(name=base_vtable_name)
+                if base_vtable_tif.is_udt():
+                    base_member_idx, base_member = base_vtable_tif.get_udm_by_offset(member_offset)
+                    if base_member_idx != -1:
+                        base_member_tid = base_vtable_tif.get_udm_tid(base_member_idx)
+                        if base_member_tid != BADADDR:
+                            renamed_member_info.append((base_vtable_tif, base_member_tid, member_offset, new_field_name, base_class_name))
+                            logging.debug(f"post_func_name_change: Tracked superclass member {hex(base_member_tid)} in {base_vtable_name}")
         
         # Find and process subclasses (classes that inherit from this class at offset 0)
         base_tid = class_tif.get_tid()
@@ -525,20 +611,328 @@ def post_func_name_change(new_name, ea):
             # Check if this is a base class member at offset 0 matching our class
             if (subclass_udm.is_baseclass() and subclass_udm.offset == 0 and
                 subclass_udm.type.get_tid() == base_tid):
+                subclass_name = subclass_tif.get_type_name()
                 _process_related_class_vtable(
                     subclass_tif, member_offset, new_field_name,
-                    args_list, processed_classes, "subclass"
+                    args_list, processed_classes, "subclass", member_rename_info
                 )
+                # Track subclass member for function renaming
+                subclass_vtable_name = get_class_vtable_struct_name(subclass_name, 0)
+                subclass_vtable_tif = ida_typeinf.tinfo_t(name=subclass_vtable_name)
+                if subclass_vtable_tif.is_udt():
+                    subclass_member_idx, subclass_member = subclass_vtable_tif.get_udm_by_offset(member_offset)
+                    if subclass_member_idx != -1:
+                        subclass_member_tid = subclass_vtable_tif.get_udm_tid(subclass_member_idx)
+                        if subclass_member_tid != BADADDR:
+                            renamed_member_info.append((subclass_vtable_tif, subclass_member_tid, member_offset, new_field_name, subclass_name))
+                            logging.debug(f"post_func_name_change: Tracked subclass member {hex(subclass_member_tid)} in {subclass_vtable_name}")
 
-    return utils.set_member_name, args_list
+    # Collect all operations to print in a table
+    operations = []
+    
+    # Collect vtable member renames from tracked info
+    for vtable_tif, member_idx, current_name, new_name in member_rename_info:
+        vtable_name = vtable_tif.get_type_name()
+        operations.append(("vtable member", vtable_name, current_name or f"member_{member_idx}", new_name, ""))
+    
+    # Collect function renames (preview what will be renamed)
+    processed_func_eas_preview = set([ea])  # Track original function
+    for vtable_tif, member_tid, member_offset, field_name, class_name in renamed_member_info:
+        # Get functions for this member
+        func_eas = _get_function_eas_from_vtable_member(member_tid, vtable_tif, member_offset)
+        
+        # Convert field name to function name
+        if class_name:
+            func_name = fieldname2funcname(field_name, class_name)
+        else:
+            func_name = fieldname2funcname(field_name)
+        
+        # Preview function renames
+        for func_ea in func_eas:
+            if func_ea in processed_func_eas_preview:
+                continue
+            processed_func_eas_preview.add(func_ea)
+            
+            current_name = idc.get_name(func_ea)
+            if current_name != func_name:
+                operations.append(("function", hex(func_ea), current_name, func_name, ""))
+    
+    # Print table
+    if operations:
+        _print_operations_table(operations)
+    
+    # After renaming vtable members, rename functions they point to
+    # We need to do this after the members are renamed, so we'll return a wrapper function
+    def rename_members_and_functions():
+        logging.info(f"post_func_name_change: rename_members_and_functions called, will rename {len(args_list)} vtable member(s)")
+        # First rename all vtable members
+        for args in args_list:
+            logging.debug(f"post_func_name_change: Renaming vtable member with args: {args}")
+            utils.set_member_name(*args)
+        
+        # Then rename functions pointed by those members
+        logging.info(f"post_func_name_change: Processing {len(renamed_member_info)} renamed member(s) to rename their functions")
+        processed_func_eas = set([ea])  # Track original function to avoid loops
+        for vtable_tif, member_tid, member_offset, field_name, class_name in renamed_member_info:
+            logging.debug(f"post_func_name_change: Processing member {hex(member_tid)} in {vtable_tif.get_type_name()}, field_name={field_name}, class_name={class_name}")
+            # Get functions for this member
+            func_eas = _get_function_eas_from_vtable_member(member_tid, vtable_tif, member_offset)
+            logging.debug(f"post_func_name_change: Found {len(func_eas)} function(s) for member {hex(member_tid)}")
+            
+            # Convert field name to function name
+            if class_name:
+                func_name = fieldname2funcname(field_name, class_name)
+            else:
+                func_name = fieldname2funcname(field_name)
+            
+            # Rename functions (skip if already processed or already has correct name)
+            for func_ea in func_eas:
+                if func_ea in processed_func_eas:
+                    continue
+                processed_func_eas.add(func_ea)
+                
+                current_name = idc.get_name(func_ea)
+                if current_name == func_name:
+                    logging.debug(f"post_func_name_change: Function {hex(func_ea)} already has name '{func_name}', skipping")
+                    continue
+                
+                utils.set_func_name(func_ea, func_name)
+                logging.info(f"post_func_name_change: Renamed function {hex(func_ea)} from '{current_name}' to '{func_name}'")
+    
+    return rename_members_and_functions, [()]
 
 
-def post_struct_member_name_change(member, new_name):
-    xrefs = idautils.XrefsFrom(member.type.get_tid())
-    xrefs = filter(lambda x: x.type == ida_xref.dr_I and x.user == 1, xrefs)
-    for xref in xrefs:
-        if utils.is_func(xref.to):
-            utils.set_func_name(xref.to, new_name)
+def post_struct_member_name_change(udt_name, udm, new_name):
+    """Handle vtable struct member name change by updating related functions and members.
+    
+    When a vtable struct member is renamed, this function:
+    1. Finds all functions referenced by this member (via data xrefs, comments, or vtable instances)
+    2. Converts the new field name to a function name
+    3. Returns a list of operations to rename all related functions and members
+    4. Also processes corresponding functions and members in superclasses and subclasses (basic inheritance at offset 0)
+    
+    Args:
+        udt_name: The UDT (struct) name
+        udm: The udm_t object representing the member
+        new_name: The new member name (field name)
+    
+    Returns:
+        tuple: (function_to_call, list_of_args) for batch processing
+    """
+    logging.info(f"post_struct_member_name_change: Called with udt_name={udt_name}, new_name={new_name}")
+    
+    # Get struct TID from UDT name
+    struct_tid = idc.get_struc_id(udt_name)
+    if struct_tid == BADADDR:
+        logging.warning(f"post_struct_member_name_change: Invalid struct_tid for {udt_name}")
+        return None, []
+    
+    # Get member TID from struct TID and member offset
+    member_offset_bytes = udm.offset // 8
+    member_tid = idc.get_member_id(struct_tid, member_offset_bytes)
+    if member_tid == BADADDR or member_tid == -1:
+        logging.warning(f"post_struct_member_name_change: Invalid member_tid for struct {udt_name} at offset {member_offset_bytes}")
+        return None, []
+    
+    # Get the vtable struct and member details using get_udm_by_tid
+    vtable_tif = ida_typeinf.tinfo_t()
+    idx = vtable_tif.get_udm_by_tid(ida_typeinf.udm_t(), member_tid)
+    if idx == -1:
+        logging.warning(f"post_struct_member_name_change: Could not get member details for member_tid={hex(member_tid)}")
+        return None, []
+    
+    # Only process vtable structs (structs ending with VTABLE_POSTFIX)
+    vtable_struct_name = vtable_tif.get_type_name()
+    if not vtable_struct_name.endswith(VTABLE_POSTFIX):
+        logging.debug(f"post_struct_member_name_change: Skipping non-vtable struct {vtable_struct_name}")
+        return None, []
+    
+    member_offset = udm.offset
+    current_member_name = udm.name or f"member_{idx}"
+    
+    # Get all function EAs referenced by this member
+    func_eas = _get_function_eas_from_vtable_member(member_tid, vtable_tif, member_offset)
+    if not func_eas:
+        logging.warning(f"post_struct_member_name_change: No functions found for member {member_tid} in {vtable_struct_name}")
+        return None, []
+    
+    # Use the same pattern as post_func_name_change: find ALL members that reference these functions
+    args_list = []
+    processed_members = set()
+    processed_classes = set()
+    renamed_member_info = []  # List of (vtable_tif, member_tid, member_offset, new_field_name, class_name)
+    member_rename_info = []  # List of (vtable_tif, member_idx, current_name, new_name)
+    
+    # For each function this member points to, find ALL members that reference it
+    for func_ea in func_eas:
+        for sid in idautils.DataRefsTo(func_ea):
+            if sid in processed_members:
+                continue
+            processed_members.add(sid)
+
+            member_udm = ida_typeinf.udm_t()
+            member_vtable_tif = ida_typeinf.tinfo_t()
+            member_idx = member_vtable_tif.get_udm_by_tid(member_udm, sid)
+            if member_idx == -1:
+                continue
+            
+            member_vtable_struct_name = member_vtable_tif.get_type_name()
+            if not member_vtable_struct_name.endswith(VTABLE_POSTFIX):
+                continue
+            
+            member_vtable_offset = member_udm.offset
+            
+            # Extract class name from vtable struct name
+            member_class_name = _extract_class_name_from_vtable(member_vtable_struct_name)
+            
+            # If we can't extract class name or get class struct, just process this member
+            if not member_class_name:
+                if _add_vtable_member_rename(member_vtable_tif, member_idx, member_udm.name, new_name,
+                                             args_list, processed_classes, member_vtable_tif.get_tid(),
+                                             member_vtable_offset):
+                    member_rename_info.append((member_vtable_tif, member_idx, member_udm.name, new_name))
+                # Track this member for function renaming
+                renamed_member_info.append((member_vtable_tif, sid, member_vtable_offset, new_name, None))
+                continue
+            
+            member_class_tif = ida_typeinf.tinfo_t(name=member_class_name)
+            if not member_class_tif.is_udt():
+                if _add_vtable_member_rename(member_vtable_tif, member_idx, member_udm.name, new_name,
+                                             args_list, processed_classes, member_vtable_tif.get_tid(),
+                                             member_vtable_offset):
+                    member_rename_info.append((member_vtable_tif, member_idx, member_udm.name, new_name))
+                renamed_member_info.append((member_vtable_tif, sid, member_vtable_offset, new_name, None))
+                continue
+            
+            member_class_tid = member_class_tif.get_tid()
+            if member_class_tid == BADADDR:
+                if _add_vtable_member_rename(member_vtable_tif, member_idx, member_udm.name, new_name,
+                                             args_list, processed_classes, member_vtable_tif.get_tid(),
+                                             member_vtable_offset):
+                    member_rename_info.append((member_vtable_tif, member_idx, member_udm.name, new_name))
+                renamed_member_info.append((member_vtable_tif, sid, member_vtable_offset, new_name, None))
+                continue
+            
+            # Process the original member
+            if _add_vtable_member_rename(member_vtable_tif, member_idx, member_udm.name, new_name,
+                                         args_list, processed_classes, member_class_tid,
+                                         member_vtable_offset):
+                member_rename_info.append((member_vtable_tif, member_idx, member_udm.name, new_name))
+            
+            # Track this member for function renaming
+            renamed_member_info.append((member_vtable_tif, sid, member_vtable_offset, new_name, member_class_name))
+            
+            # Find and process superclasses (base classes at offset 0)
+            for base_udm in member_class_tif.iter_udt():
+                if base_udm.is_baseclass() and base_udm.offset == 0:
+                    base_class_tif = base_udm.type
+                    base_class_name = base_class_tif.get_type_name()
+                    # Process vtable member in superclass
+                    base_vtable_tif, base_member_tid = _process_related_class_vtable(
+                        base_class_tif, member_vtable_offset, new_name,
+                        args_list, processed_classes, "superclass", member_rename_info
+                    )
+                    # Track superclass member for function renaming
+                    if base_vtable_tif is not None and base_member_tid != BADADDR:
+                        renamed_member_info.append((base_vtable_tif, base_member_tid, member_vtable_offset, new_name, base_class_name))
+            
+            # Find and process subclasses (classes that inherit from this class at offset 0)
+            base_tid = member_class_tif.get_tid()
+            for ref_sid in idautils.DataRefsTo(base_tid):
+                if not idc.is_member_id(ref_sid):
+                    continue
+                
+                subclass_udm = ida_typeinf.udm_t()
+                subclass_tif = ida_typeinf.tinfo_t()
+                if subclass_tif.get_udm_by_tid(subclass_udm, ref_sid) == -1:
+                    continue
+                
+                # Check if this is a base class member at offset 0 matching our class
+                if (subclass_udm.is_baseclass() and subclass_udm.offset == 0 and
+                    subclass_udm.type.get_tid() == base_tid):
+                    subclass_name = subclass_tif.get_type_name()
+                    # Process vtable member in subclass
+                    subclass_vtable_tif, subclass_member_tid = _process_related_class_vtable(
+                        subclass_tif, member_vtable_offset, new_name,
+                        args_list, processed_classes, "subclass", member_rename_info
+                    )
+                    # Track subclass member for function renaming
+                    if subclass_vtable_tif is not None and subclass_member_tid != BADADDR:
+                        renamed_member_info.append((subclass_vtable_tif, subclass_member_tid, member_vtable_offset, new_name, subclass_name))
+    
+    # Collect all operations to print in a table (same as post_func_name_change)
+    operations = []
+    
+    # Collect vtable member renames from tracked info
+    for vtable_tif, member_idx, current_name, new_name in member_rename_info:
+        vtable_name = vtable_tif.get_type_name()
+        operations.append(("vtable member", vtable_name, current_name or f"member_{member_idx}", new_name, ""))
+    
+    # Collect function renames (preview what will be renamed)
+    processed_func_eas_preview = set()
+    for vtable_tif, member_tid, member_offset, field_name, class_name in renamed_member_info:
+        # Get functions for this member
+        func_eas = _get_function_eas_from_vtable_member(member_tid, vtable_tif, member_offset)
+        
+        # Convert field name to function name
+        if class_name:
+            func_name = fieldname2funcname(field_name, class_name)
+        else:
+            func_name = fieldname2funcname(field_name)
+        
+        # Preview function renames
+        for func_ea in func_eas:
+            if func_ea in processed_func_eas_preview:
+                continue
+            processed_func_eas_preview.add(func_ea)
+            
+            current_name = idc.get_name(func_ea)
+            if current_name != func_name:
+                operations.append(("function", hex(func_ea), current_name, func_name, ""))
+    
+    # Print table
+    if operations:
+        _print_operations_table(operations)
+    
+    # After renaming vtable members, rename functions they point to
+    # We need to do this after the members are renamed, so we'll return a wrapper function
+    def rename_members_and_functions():
+        logging.info(f"post_struct_member_name_change: rename_members_and_functions called, will rename {len(args_list)} vtable member(s)")
+        # First rename all vtable members
+        for args in args_list:
+            logging.debug(f"post_struct_member_name_change: Renaming vtable member with args: {args}")
+            utils.set_member_name(*args)
+        
+        # Then rename functions pointed by those members
+        logging.info(f"post_struct_member_name_change: Processing {len(renamed_member_info)} renamed member(s) to rename their functions")
+        processed_func_eas = set()
+        for vtable_tif, member_tid, member_offset, field_name, class_name in renamed_member_info:
+            logging.debug(f"post_struct_member_name_change: Processing member {hex(member_tid)} in {vtable_tif.get_type_name()}, field_name={field_name}, class_name={class_name}")
+            # Get functions for this member
+            func_eas = _get_function_eas_from_vtable_member(member_tid, vtable_tif, member_offset)
+            logging.debug(f"post_struct_member_name_change: Found {len(func_eas)} function(s) for member {hex(member_tid)}")
+            
+            # Convert field name to function name
+            if class_name:
+                func_name = fieldname2funcname(field_name, class_name)
+            else:
+                func_name = fieldname2funcname(field_name)
+            
+            # Rename functions (skip if already processed or already has correct name)
+            for func_ea in func_eas:
+                if func_ea in processed_func_eas:
+                    continue
+                processed_func_eas.add(func_ea)
+                
+                current_name = idc.get_name(func_ea)
+                if current_name == func_name:
+                    logging.debug(f"post_struct_member_name_change: Function {hex(func_ea)} already has name '{func_name}', skipping")
+                    continue
+                
+                utils.set_func_name(func_ea, func_name)
+                logging.info(f"post_struct_member_name_change: Renamed function {hex(func_ea)} from '{current_name}' to '{func_name}'")
+    
+    return rename_members_and_functions, [()]
 
 
 def post_struct_member_type_change(member):
@@ -617,6 +1011,132 @@ def funcname2fieldname(name):
     if name.startswith("operator "):
         name = name[9:].strip()
     return name
+
+
+def fieldname2funcname(field_name, class_name=None):
+    """Convert field name to function name.
+    
+    This is the reverse of funcname2fieldname. It converts a vtable member
+    field name back to a function name, optionally with class prefix.
+    
+    Args:
+        field_name: The field name (e.g., "getDongleIds", "dtor")
+        class_name: Optional class name to prefix (e.g., "MyClass")
+    
+    Returns:
+        Function name (e.g., "MyClass::getDongleIds" or just "getDongleIds")
+    """
+    func_name = field_name
+    
+    # Reverse the dtor conversion
+    if func_name == "dtor":
+        func_name = "~" + (class_name if class_name else "")
+    
+    # Reverse operator conversion (if it was an operator)
+    # Note: We can't fully reverse this without more context, so we keep it as-is
+    
+    if class_name:
+        func_name = class_name + VTABLE_DELIMITER + func_name
+    
+    return func_name
+
+
+def _get_function_eas_from_vtable_member(member_tid, vtable_tif, member_offset):
+    """Get all function EAs referenced by a vtable member.
+    
+    Args:
+        member_tid: TID of the vtable member
+        vtable_tif: tinfo_t of the vtable struct
+        member_offset: Offset of the member in bits
+    
+    Returns:
+        list: List of function EAs
+    """
+    func_eas = []
+    
+    # Method 1: Get functions via DataRefsTo (member TID -> function EA)
+    for ref_ea in idautils.DataRefsTo(member_tid):
+        if utils.is_func(ref_ea):
+            func_eas.append(ref_ea)
+            logging.debug(f"_get_function_eas_from_vtable_member: Found function {hex(ref_ea)} via DataRefsTo")
+    
+    # Method 2: Try to get function EA from member comment
+    # Comments are set in format: f"{func:08x}"
+    member_offset_bytes = member_offset // 8
+    member_cmt = idc.get_member_cmt(vtable_tif.get_tid(), member_offset_bytes, False)
+    if member_cmt:
+        try:
+            func_ea = int(member_cmt, 16)
+            if func_ea != BADADDR and utils.is_func(func_ea) and func_ea not in func_eas:
+                func_eas.append(func_ea)
+                logging.debug(f"_get_function_eas_from_vtable_member: Found function {hex(func_ea)} via member comment")
+        except ValueError:
+            pass
+    
+    # Method 3: Try to find function from vtable instance
+    vtable_struct_name = vtable_tif.get_type_name()
+    func_ea = _find_func_ea_from_vtable_instance(vtable_struct_name, member_offset)
+    if func_ea and func_ea != BADADDR and func_ea not in func_eas:
+        func_eas.append(func_ea)
+        logging.debug(f"_get_function_eas_from_vtable_member: Found function {hex(func_ea)} via vtable instance")
+    
+    logging.info(f"_get_function_eas_from_vtable_member: Total {len(func_eas)} function(s) found for member_tid={hex(member_tid)}")
+    return func_eas
+
+
+def _process_related_class_functions(related_class_tif, member_offset,
+                                       new_func_name, processed_functions, relation_label):
+    """Process functions in a related class (superclass or subclass).
+    
+    Args:
+        related_class_tif: tinfo_t of the related class to process
+        member_offset: Offset of the member in bits
+        new_func_name: New name for the function
+        processed_functions: Set of function EAs already processed
+        relation_label: Label for the relation (e.g., "superclass", "subclass")
+    
+    Returns:
+        list: List of (func_ea, new_func_name) tuples for batch processing
+    """
+    func_rename_list = []
+    related_class_name = related_class_tif.get_type_name()
+    related_vtable_name = get_class_vtable_struct_name(related_class_name, 0)
+    related_vtable_tif = ida_typeinf.tinfo_t(name=related_vtable_name)
+    
+    if not related_vtable_tif.is_udt():
+        return func_rename_list
+    
+    related_member_idx, related_member = related_vtable_tif.get_udm_by_offset(member_offset)
+    if related_member_idx == -1:
+        return func_rename_list
+    
+    # Get the member TID
+    related_member_tid = related_vtable_tif.get_udm_tid(related_member_idx)
+    if related_member_tid == BADADDR:
+        return func_rename_list
+    
+    # Get function EAs for this member
+    related_func_eas = _get_function_eas_from_vtable_member(
+        related_member_tid, related_vtable_tif, member_offset
+    )
+    
+    for func_ea in related_func_eas:
+        if func_ea in processed_functions:
+            logging.debug(f"_process_related_class_functions: Skipping already processed function {hex(func_ea)}")
+            continue
+        processed_functions.add(func_ea)
+        
+        func_name = idc.get_name(func_ea)
+        # Check if function already has the expected name to avoid infinite loops
+        if func_name == new_func_name:
+            logging.debug(f"_process_related_class_functions: Function {hex(func_ea)} already has name '{new_func_name}', skipping")
+            continue
+        
+        func_rename_list.append((func_ea, new_func_name))
+        logging.info(f"_process_related_class_functions: Will rename function {hex(func_ea)} from '{func_name}' to '{new_func_name}' ({relation_label})")
+    
+    logging.debug(f"_process_related_class_functions: Returning {len(func_rename_list)} function(s) to rename for {relation_label}")
+    return func_rename_list
 
 
 def update_vtable_struct(

@@ -20,33 +20,36 @@ def is_alt_down():
     return bool(modifiers & QtCore.Qt.AltModifier)
 # end
 
-#LOG_PATH = pathlib.Path("/tmp/cpp_plugin.log")
-#
-#if not LOG_PATH.exists():
-#    if not LOG_PATH.parent.exists():
-#        LOG_PATH.parent.mkdir()
-#    LOG_PATH.touch()
-#
-#logging.basicConfig(
-#    filename=LOG_PATH.absolute(),
-#    filemode="a",
-#    level=logging.DEBUG,
-#    format="%(asctime)s - %(levelname)s - %(filename)s:%(funcName)s:%(lineno)d - %(message)s",
-#)
+# LOG_PATH = pathlib.Path("/tmp/cpp_plugin.log")
+
+# if not LOG_PATH.exists():
+#     if not LOG_PATH.parent.exists():
+#         LOG_PATH.parent.mkdir()
+#     LOG_PATH.touch()
+
+# logging.basicConfig(
+#     filename=LOG_PATH.absolute(),
+#     filemode="a",
+#     level=logging.DEBUG,
+#     format="%(asctime)s - %(levelname)s - %(filename)s:%(funcName)s:%(lineno)d - %(message)s",
+# )
 
 class CPPHooks(ida_idp.IDB_Hooks):
     def __init__(self, is_decompiler_on):
         super(CPPHooks, self).__init__()
         self.is_decompiler_on = is_decompiler_on
 
-    def renamed(self, ea, new_name, local_name):
-        logging.info(f"in renamed({ea}, {new_name}, {local_name})")
+    def renamed(self, ea, new_name, is_local_name, old_name):
+        logging.info(f"in renamed({ea}, {new_name}, {is_local_name}, {old_name})")
         if utils.is_func(ea):
             func, args_list = cpp_utils.post_func_name_change(new_name, ea)
             self.unhook()
-            for args in args_list:
-                func(*args)
-            self.hook()
+            try:
+                # Execute all operations (might be wrapper function or batch operations)
+                for args in args_list:
+                    func(*args)
+            finally:
+                self.hook()
         return 0
 
     def func_updated(self, pfn):
@@ -58,16 +61,27 @@ class CPPHooks(ida_idp.IDB_Hooks):
         self.hook()
         return 0
 
-    def renaming_struc_member(self, sptr, mptr, newname):
-        logging.info(f"in renaming_struc_member({sptr=}, {mptr=}, {newname=})")
-        if sptr.is_frame():
-            return 0
-        cpp_utils.post_struct_member_name_change(mptr, newname)
-        return 0
-
     def struc_member_changed(self, sptr, mptr):
         logging.info(f"in struc_member_changed({sptr=}, {mptr=})")
         cpp_utils.post_struct_member_type_change(mptr)
+        return 0
+
+    def lt_udm_renamed(self, udt_name, udm, oldname):
+        logging.info(f"in lt_udm_renamed(udt_name={udt_name}, udm={udm}, oldname={oldname})")
+        # Get the new member name from udm
+        new_name = udm.name
+        if not new_name:
+            return 0
+        
+        func, args_list = cpp_utils.post_struct_member_name_change(udt_name, udm, new_name)
+        if func is not None:
+            self.unhook()
+            try:
+                # Execute all operations
+                for args in args_list:
+                    func(*args)
+            finally:
+                self.hook()
         return 0
 
     def ti_changed(self, ea, typeinf, fnames):
@@ -98,14 +112,13 @@ class CPPUIHooks(ida_kernwin.View_Hooks):
             return
 
         vu = ida_hexrays.get_widget_vdui(viewer)
-        print(f"[d] item: {vu.item}")
         item = vu.item
         e = item.e
+        if not e:
+            return
+
         if e.op == ida_hexrays.cot_call:
             e = e.x
-        print("Expr:", e.dstr())
-        print("Type:", e.type.dstr())
-        print("op: %x" % e.op)
 
         if e.op != ida_hexrays.cot_memptr:
             print(f"[?] unexpected value of e.op = {e.op}")
