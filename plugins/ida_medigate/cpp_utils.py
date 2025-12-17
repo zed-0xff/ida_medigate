@@ -348,15 +348,45 @@ def add_class_vtable(struct_ptr, vtable_name, offset=BADADDR, vtable_field_name=
 
 @batchmode
 def post_func_name_change(new_name, ea):
-    xrefs = idautils.XrefsTo(ea, ida_xref.XREF_USER)
-    xrefs = filter(lambda x: x.type == ida_xref.dr_I and x.user == 1, xrefs)
+    """Handle function name change by updating related vtable struct members.
+    
+    When a function is renamed, this function:
+    1. Finds all struct members that reference this function (via data xrefs)
+    2. Extracts the last part of the function name (after splitting by VTABLE_DELIMITER)
+    3. Converts it to a field name and renames the struct members
+    
+    Args:
+        new_name: The new function name (may contain VTABLE_DELIMITER like "Class::method")
+        ea: The function's effective address
+    
+    Returns:
+        tuple: (function_to_call, list_of_args) for batch processing
+    """
+    # Extract the member name from the function name
+    # Split by VTABLE_DELIMITER and use the last part, then convert to field name
+    new_field_name = funcname2fieldname(new_name)
+    
+    # Get data references TO the function (returns list of EAs)
+    ref_eas = idautils.DataRefsTo(ea)
+    
     args_list = []
-    for xref in xrefs:
-        member = ida_typeinf.udm_t()
-        ida_typeinf.tinfo_t().get_udm_by_tid(member, xref.frm)
-        struct = ida_typeinf.tinfo_t(tid=xref.frm)
-        if member is not None and struct is not None:
-            args_list.append([struct, member.offset(), new_name])
+    processed_members = set()  # Avoid processing the same member twice
+    
+    for sid in ref_eas:
+        # Avoid processing the same member twice
+        if sid in processed_members:
+            continue
+
+        processed_members.add(sid)
+
+        udm = ida_typeinf.udm_t()
+        tif = ida_typeinf.tinfo_t()
+        idx = tif.get_udm_by_tid(udm, sid) # This populates both tif (with struct) and udm (with member details)
+        if idx == -1:
+            continue
+        
+        print(f"[.] {tif.get_type_name()}.{udm.name} -> {new_field_name}")
+        args_list.append([tif, idx, new_field_name])
 
     return utils.set_member_name, args_list
 

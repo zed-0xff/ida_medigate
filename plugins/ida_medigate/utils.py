@@ -320,15 +320,15 @@ def get_member_substruct(member: ida_typeinf.udm_t) -> ida_typeinf.tinfo_t | Non
     return None
 
 
-def set_member_name(struct: ida_typeinf.tinfo_t, offset: int, new_name: str):
+def set_member_name(struct: ida_typeinf.tinfo_t, index: int, new_name: str):
     i = 0
-    ret_val = struct.rename_udm(offset, new_name)
+    ret_val = struct.rename_udm(index, new_name)
     while ret_val != 0:
         formatted_new_name = f"{new_name}_{i}"
         i += 1
         if i > 250:
             return False
-        ret_val = struct.rename_udm(offset, formatted_new_name)
+        ret_val = struct.rename_udm(index, formatted_new_name)
     return True
 
 
