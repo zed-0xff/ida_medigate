@@ -347,6 +347,94 @@ def add_class_vtable(struct_ptr, vtable_name, offset=BADADDR, vtable_field_name=
 
 
 @batchmode
+def _extract_class_name_from_vtable(vtable_struct_name):
+    """Extract class name from vtable struct name.
+    
+    Args:
+        vtable_struct_name: Name of the vtable struct (e.g., "Class_vtbl" or "Class_0004_vtbl")
+    
+    Returns:
+        Class name or None if extraction fails
+    """
+    if not vtable_struct_name.endswith(VTABLE_POSTFIX):
+        return None
+    
+    class_name = vtable_struct_name[:-len(VTABLE_POSTFIX)]
+    # Handle offset-based vtable names like "Class_0004_vtbl"
+    if "_" in class_name:
+        parts = class_name.rsplit("_", 1)
+        if len(parts) == 2 and len(parts[1]) == 4:
+            try:
+                int(parts[1], 16)  # Check if it's a hex offset
+                class_name = parts[0]
+            except ValueError:
+                pass
+    
+    return class_name
+
+
+def _add_vtable_member_rename(vtable_tif, member_idx, member_name, new_field_name, 
+                               args_list, processed_classes, class_tid, member_offset, 
+                               relation_label=""):
+    """Add a vtable member rename to the args list if not already processed.
+    
+    Args:
+        vtable_tif: tinfo_t of the vtable struct
+        member_idx: Index of the member in the vtable
+        member_name: Current name of the member
+        new_field_name: New name for the member
+        args_list: List to append rename operations to
+        processed_classes: Set of (class_tid, offset) tuples already processed
+        class_tid: TID of the class this vtable belongs to
+        member_offset: Offset of the member in bits
+        relation_label: Optional label for the relation (e.g., "superclass", "subclass")
+    
+    Returns:
+        True if the member was added, False if it was already processed
+    """
+    class_key = (class_tid, member_offset)
+    if class_key in processed_classes:
+        return False
+    
+    processed_classes.add(class_key)
+    vtable_name = vtable_tif.get_type_name()
+    label_str = f" ({relation_label})" if relation_label else ""
+    left_part = f"[.] {vtable_name}.{member_name}"
+    print(f"{left_part:<64} -> {new_field_name}{label_str}")
+    args_list.append([vtable_tif, member_idx, new_field_name])
+    return True
+
+
+def _process_related_class_vtable(related_class_tif, member_offset, 
+                                   new_field_name, args_list, processed_classes, 
+                                   relation_label):
+    """Process vtable member in a related class (superclass or subclass).
+    
+    Args:
+        related_class_tif: tinfo_t of the class to process
+        member_offset: Offset of the member in bits
+        new_field_name: New name for the member
+        args_list: List to append rename operations to
+        processed_classes: Set of (class_tid, offset) tuples already processed
+        relation_label: Label for the relation (e.g., "superclass", "subclass")
+    """
+    related_class_name = related_class_tif.get_type_name()
+    related_vtable_name = get_class_vtable_struct_name(related_class_name, 0)
+    related_vtable_tif = ida_typeinf.tinfo_t(name=related_vtable_name)
+    
+    if not related_vtable_tif.is_udt():
+        return
+    
+    related_member_idx, related_member = related_vtable_tif.get_udm_by_offset(member_offset)
+    if related_member_idx != -1:
+        related_class_tid = related_class_tif.get_tid()
+        _add_vtable_member_rename(
+            related_vtable_tif, related_member_idx, related_member.name,
+            new_field_name, args_list, processed_classes, related_class_tid,
+            member_offset, relation_label
+        )
+
+
 def post_func_name_change(new_name, ea):
     """Handle function name change by updating related vtable struct members.
     
@@ -354,6 +442,7 @@ def post_func_name_change(new_name, ea):
     1. Finds all struct members that reference this function (via data xrefs)
     2. Extracts the last part of the function name (after splitting by VTABLE_DELIMITER)
     3. Converts it to a field name and renames the struct members
+    4. Also renames corresponding members in superclasses and subclasses (basic inheritance at offset 0)
     
     Args:
         new_name: The new function name (may contain VTABLE_DELIMITER like "Class::method")
@@ -362,31 +451,84 @@ def post_func_name_change(new_name, ea):
     Returns:
         tuple: (function_to_call, list_of_args) for batch processing
     """
-    # Extract the member name from the function name
-    # Split by VTABLE_DELIMITER and use the last part, then convert to field name
     new_field_name = funcname2fieldname(new_name)
-    
-    # Get data references TO the function (returns list of EAs)
     ref_eas = idautils.DataRefsTo(ea)
     
     args_list = []
-    processed_members = set()  # Avoid processing the same member twice
+    processed_members = set()
+    processed_classes = set()
     
     for sid in ref_eas:
-        # Avoid processing the same member twice
         if sid in processed_members:
             continue
-
         processed_members.add(sid)
 
         udm = ida_typeinf.udm_t()
-        tif = ida_typeinf.tinfo_t()
-        idx = tif.get_udm_by_tid(udm, sid) # This populates both tif (with struct) and udm (with member details)
+        vtable_tif = ida_typeinf.tinfo_t()
+        idx = vtable_tif.get_udm_by_tid(udm, sid)
         if idx == -1:
             continue
         
-        print(f"[.] {tif.get_type_name()}.{udm.name} -> {new_field_name}")
-        args_list.append([tif, idx, new_field_name])
+        vtable_struct_name = vtable_tif.get_type_name()
+        member_offset = udm.offset
+        
+        # Extract class name from vtable struct name
+        class_name = _extract_class_name_from_vtable(vtable_struct_name)
+        
+        # If we can't extract class name or get class struct, just process this member
+        if not class_name:
+            _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
+                                     args_list, processed_classes, vtable_tif.get_tid(),
+                                     member_offset)
+            continue
+        
+        class_tif = ida_typeinf.tinfo_t(name=class_name)
+        if not class_tif.is_udt():
+            _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
+                                     args_list, processed_classes, vtable_tif.get_tid(),
+                                     member_offset)
+            continue
+        
+        class_tid = class_tif.get_tid()
+        if class_tid == BADADDR:
+            _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
+                                     args_list, processed_classes, vtable_tif.get_tid(),
+                                     member_offset)
+            continue
+        
+        # Process the original member
+        if not _add_vtable_member_rename(vtable_tif, idx, udm.name, new_field_name,
+                                         args_list, processed_classes, class_tid,
+                                         member_offset):
+            continue
+        
+        # Find and process superclasses (base classes at offset 0)
+        for base_udm in class_tif.iter_udt():
+            if base_udm.is_baseclass() and base_udm.offset == 0:
+                base_class_tif = base_udm.type
+                _process_related_class_vtable(
+                    base_class_tif, member_offset, new_field_name,
+                    args_list, processed_classes, "superclass"
+                )
+        
+        # Find and process subclasses (classes that inherit from this class at offset 0)
+        base_tid = class_tif.get_tid()
+        for ref_sid in idautils.DataRefsTo(base_tid):
+            if not idc.is_member_id(ref_sid):
+                continue
+            
+            subclass_udm = ida_typeinf.udm_t()
+            subclass_tif = ida_typeinf.tinfo_t()
+            if subclass_tif.get_udm_by_tid(subclass_udm, ref_sid) == -1:
+                continue
+            
+            # Check if this is a base class member at offset 0 matching our class
+            if (subclass_udm.is_baseclass() and subclass_udm.offset == 0 and
+                subclass_udm.type.get_tid() == base_tid):
+                _process_related_class_vtable(
+                    subclass_tif, member_offset, new_field_name,
+                    args_list, processed_classes, "subclass"
+                )
 
     return utils.set_member_name, args_list
 
