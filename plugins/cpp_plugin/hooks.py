@@ -1,44 +1,38 @@
 import logging
-<<<<<<<< HEAD:plugins/ida_medigate/cpp_plugin/hexrays_hooks.py
-========
 import pathlib
 import ida_frame
 import ida_funcs
->>>>>>>> WingsZeng-master:plugins/ida_medigate/cpp_plugin/hooks.py
 import ida_hexrays
+import ida_idp
+import ida_kernwin
 import ida_nalt
-<<<<<<<< HEAD:plugins/ida_medigate/cpp_plugin/hexrays_hooks.py
-import ida_struct
-import idaapi
-from idc import BADADDR
-from .. import cpp_utils, utils
-
-log = logging.getLogger("ida_medigate")
-
-
-_ANOTHER_DECOMPILER_EA = None
-========
 import ida_name
 import ida_pro
 import ida_typeinf
 import idc
 from idc import BADADDR
-from .. import cpp_utils, utils
+from ida_medigate import cpp_utils, utils
 
-LOG_PATH = pathlib.Path("/tmp/cpp_plugin.log")
+# because we can't override dblclick event default action :(
+from PySide6 import QtCore, QtWidgets
+def is_alt_down():
+    modifiers = QtWidgets.QApplication.keyboardModifiers()
+    return bool(modifiers & QtCore.Qt.AltModifier)
+# end
 
-if not LOG_PATH.exists():
-    if not LOG_PATH.parent.exists():
-        LOG_PATH.parent.mkdir()
-    LOG_PATH.touch()
-
-logging.basicConfig(
-    filename=LOG_PATH.absolute(),
-    filemode="a",
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(filename)s:%(funcName)s:%(lineno)d - %(message)s",
-)
-
+#LOG_PATH = pathlib.Path("/tmp/cpp_plugin.log")
+#
+#if not LOG_PATH.exists():
+#    if not LOG_PATH.parent.exists():
+#        LOG_PATH.parent.mkdir()
+#    LOG_PATH.touch()
+#
+#logging.basicConfig(
+#    filename=LOG_PATH.absolute(),
+#    filemode="a",
+#    level=logging.DEBUG,
+#    format="%(asctime)s - %(levelname)s - %(filename)s:%(funcName)s:%(lineno)d - %(message)s",
+#)
 
 class CPPHooks(ida_idp.IDB_Hooks):
     def __init__(self, is_decompiler_on):
@@ -95,30 +89,40 @@ class CPPHooks(ida_idp.IDB_Hooks):
 
 class CPPUIHooks(ida_kernwin.View_Hooks):
     def view_dblclick(self, viewer, point):
-        logging.info(f"in view_dblclick({viewer=}, {point=})")
         widget_type = ida_kernwin.get_widget_type(viewer)
-        if not (widget_type == 48 or widget_type == 28):
+        if not (widget_type == ida_kernwin.BWN_PSEUDOCODE or widget_type == ida_kernwin.BWN_TILIST):
             return
         # Decompiler or Structures window
-        func_cand_name = None
-        place, x, y = ida_kernwin.get_custom_viewer_place(viewer, False)
-        if place.name() == "tiplace_t":  # Structure window:
-            tiplace: ida_kernwin.tiplace_t = ida_kernwin.place_t_as_tiplace_t(place)
-            if tiplace is not None:
-                s = ida_typeinf.tinfo_t(tid=ida_nalt.get_strid(tiplace.ordinal))
-                if s:
-                    member = ida_typeinf.udm_t()
-                    ret_val = s.get_udm_by_offset(member, tiplace.calc_udm_offset())
-                    if ret_val:
-                        func_cand_name = member.name
-        if func_cand_name is None:
-            line = utils.get_curline_striped_from_viewer(viewer)
-            func_cand_name = cpp_utils.find_valid_cppname_in_line(line, x)
-        if func_cand_name is not None:
-            func_cand_ea = ida_name.get_name_ea(BADADDR, func_cand_name)
-            if func_cand_ea is not None and utils.is_func(func_cand_ea):
-                idc.jumpto(func_cand_ea)
->>>>>>>> WingsZeng-master:plugins/ida_medigate/cpp_plugin/hooks.py
+
+        if not is_alt_down():
+            return
+
+        vu = ida_hexrays.get_widget_vdui(viewer)
+        print(f"[d] item: {vu.item}")
+        item = vu.item
+        e = item.e
+        if e.op == ida_hexrays.cot_call:
+            e = e.x
+        print("Expr:", e.dstr())
+        print("Type:", e.type.dstr())
+        print("op: %x" % e.op)
+
+        if e.op != ida_hexrays.cot_memptr:
+            print(f"[?] unexpected value of e.op = {e.op}")
+            return
+
+        left = e.x      # e.g., pApp->vfptr
+        member = e.m    # member offset/index
+        struct_t = left.type.get_pointed_object()
+        field = struct_t.get_udm_by_offset(member*8)[1]
+        if not field:
+            print(f"[?] {struct_t.dstr()}: no field @ {member}")
+            return
+
+        cmt = field.cmt
+        if cmt and cmt != '':
+            ea = int(cmt, 16)
+            idc.jumpto(ea)
 
 
 class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
@@ -153,24 +157,17 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
         if n_expr.op == ida_hexrays.cot_memptr:
             chain.insert(0, n_expr.x.type.get_pointed_object().get_type_name())
         elif n_expr.op == ida_hexrays.cot_idx:
-            log.debug("encountered idx, skipping")
+            logging.debug("encountered idx, skipping")
             return None
         return chain
 
     def find_best_member(self, chain, union_name: str) -> ida_typeinf.udm_t:
         logging.info(f"in find_best_member({chain=}, {union_name=})")
         for cand in chain:
-<<<<<<<< HEAD:plugins/ida_medigate/cpp_plugin/hexrays_hooks.py
-            result = ida_struct.get_member_by_fullname(union_name + "." + cand)
-            if result:
-                m, s = result
-                log.debug("Found class: %s, offset=0x%X", cand, m.soff)
-========
             result: int = ida_typeinf.get_udm_by_fullname(union_name + "." + cand)
             if result != -1:
                 _, m = ida_typeinf.tinfo_t(name=union_name).get_udm(result)
                 logging.debug("Found class: %s, offset=%d", cand, m.offset)
->>>>>>>> WingsZeng-master:plugins/ida_medigate/cpp_plugin/hooks.py
                 return m
         return None
 
@@ -178,28 +175,20 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
         logging.info(f"in get_vtable_sptr({m=})")
         vtable_type = utils.get_member_tinfo(m)
         if not (vtable_type and vtable_type.is_ptr()):
-            log.debug("vtable_type isn't ptr %s", vtable_type)
+            logging.debug("vtable_type isn't ptr %s", vtable_type)
             return None
 
         vtable_struc_typeinf = vtable_type.get_pointed_object()
         if not (vtable_struc_typeinf and vtable_struc_typeinf.is_struct()):
-            log.debug("vtable isn't struct (%s)", vtable_struc_typeinf.dstr())
+            logging.debug("vtable isn't struct (%s)", vtable_struc_typeinf.dstr())
             return None
 
-<<<<<<<< HEAD:plugins/ida_medigate/cpp_plugin/hexrays_hooks.py
-        vtable_struct_name = vtable_struc_typeinf.get_type_name()
-        vtable_sptr = utils.get_sptr_by_name(vtable_struct_name)
-        if vtable_sptr is None:
-            log.debug(
-                "%08X: Oh no %s is not a valid struct",
-========
         vtable_struct_name: str = vtable_struc_typeinf.get_type_name()
         try:
             vtable_sptr = utils.get_sptr_by_name(vtable_struct_name)
         except ValueError:
             logging.debug(
                 "0x%x: Oh no %s is not a valid struct",
->>>>>>>> WingsZeng-master:plugins/ida_medigate/cpp_plugin/hooks.py
                 self.cfunc.entry_ea,
                 vtable_struct_name,
             )
@@ -210,21 +199,18 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
     def get_ancestors(self):
         logging.info(f"in get_ancestors()")
         vtable_expr = self.parents.back().cexpr
-        if vtable_expr.op not in (
-            ida_hexrays.cot_memptr,
-            ida_hexrays.cot_memref,
-        ):
+        if vtable_expr.op not in (ida_hexrays.cot_memptr, ida_hexrays.cot_memref):
             return None
 
         if self.parents.size() < 2:
-            log.debug("parents size less than 2 (%d)", self.parents.size())
+            logging.debug("parents size less than 2 (%d)", self.parents.size())
             return None
 
         idx_cexpr = None
         funcptr_parent = None
         funcptr_item = self.parents.at(self.parents.size() - 2)
         if not funcptr_item.is_expr():
-            log.debug(
+            logging.debug(
                 "funcptr_item is not expr!: %s %s %d",
                 type(funcptr_item),
                 funcptr_item.is_expr(),
@@ -235,7 +221,7 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
         if funcptr_expr.op == ida_hexrays.cot_idx:
             idx_cexpr = funcptr_expr
             if self.parents.size() < 4:
-                log.debug(
+                logging.debug(
                     "there is idx but parents size less than 3 (%d)",
                     self.parents.size(),
                 )
@@ -243,20 +229,17 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
 
             funcptr_expr = self.parents.at(self.parents.size() - 3)
             if not funcptr_expr.is_expr():
-                log.debug("funcptr isn't expr")
+                logging.debug("funcptr isn't expr")
                 return None
             funcptr_expr = funcptr_expr.cexpr
             funcptr_parent = self.parents.at(self.parents.size() - 4)
             if not funcptr_parent.is_expr():
-                log.debug("funcptr_parent isn't expr")
+                logging.debug("funcptr_parent isn't expr")
                 return None
             funcptr_parent = funcptr_parent.cexpr
-        if funcptr_expr.op not in (
-            ida_hexrays.cot_memptr,
-            ida_hexrays.cot_memref,
-        ):
+        if funcptr_expr.op not in (ida_hexrays.cot_memptr, ida_hexrays.cot_memref):
 
-            log.debug("funcptr_expr isn't -> (%s)", funcptr_expr.opname)
+            logging.debug("funcptr_expr isn't -> (%s)", funcptr_expr.opname)
             return None
 
         return funcptr_parent, funcptr_expr, idx_cexpr, vtable_expr
@@ -268,24 +251,22 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
             # wrong vtable*, so it might be too short struct, like:
             #   .vtable.PdmAcqServiceIf[1].___cxa_pure_virtual_2
             if idx_cexpr.y.op != ida_hexrays.cot_num:
-                log.debug(
-                    "%08X: idx doesn't contains a num but %s",
+                logging.debug(
+                    "0x%x: idx doesn't contains a num but %s",
                     self.cfunc.entry_ea,
                     idx_cexpr.y.opname,
                 )
                 return -1
             num = idx_cexpr.y.get_const_value()
             if not (idx_cexpr.type and idx_cexpr.type.is_struct()):
-                log.debug(
-                    "%08X idx type isn't struct %s",
-                    self.cfunc.entry_ea,
-                    idx_cexpr.type,
+                logging.debug(
+                    "0x%x idx type isn't struct %s", self.cfunc.entry_ea, idx_cexpr.type
                 )
                 return -1
             idx_struct: ida_typeinf.tinfo_t = idx_cexpr.type
             if idx_struct is None:
-                log.debug(
-                    "%08X idx type isn't pointing to struct %s",
+                logging.debug(
+                    "0x%x idx type isn't pointing to struct %s",
                     self.cfunc.entry_ea,
                     idx_cexpr.type,
                 )
@@ -298,20 +279,14 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
         logging.info(f"in get_vtable_member_type({vtable_sptr=}, {offset=})")
         vtable_struct_name: str = vtable_sptr.get_type_name()
         try:
-<<<<<<<< HEAD:plugins/ida_medigate/cpp_plugin/hexrays_hooks.py
-            funcptr_member = ida_struct.get_member(vtable_sptr, offset)
-        except TypeError:
-            log.exception("%08X: bad offset: 0x%X", self.cfunc.entry_ea, offset)
-========
             funcptr_idx, funcptr_member = vtable_sptr.get_udm_by_offset(offset)
         except TypeError as e:
             logging.exception("0x%x: bad offset: 0x%x", self.cfunc.entry_ea, offset)
->>>>>>>> WingsZeng-master:plugins/ida_medigate/cpp_plugin/hooks.py
             return None
 
         if funcptr_member is None:
-            log.debug(
-                "%08X:  %s.0x%X is not a valid struct member",
+            logging.debug(
+                "0x%x:  %s.%d is not a valid struct member",
                 self.cfunc.entry_ea,
                 vtable_struct_name,
                 offset,
@@ -320,8 +295,8 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
 
         funcptr_member_type = utils.get_member_tinfo(funcptr_member)
         if not funcptr_member_type.is_funcptr():
-            log.debug(
-                "%08X: member type (%s) isn't funcptr!",
+            logging.debug(
+                "0x%x: member type (%s) isn't funcptr!",
                 self.cfunc.entry_ea,
                 funcptr_member_type.dstr(),
             )
@@ -342,18 +317,14 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
         offset = self.fix_member_idx(idx_cexpr)
         if offset == -1:
             return None
-<<<<<<<< HEAD:plugins/ida_medigate/cpp_plugin/hexrays_hooks.py
-        funcptr_member_type = self.get_vtable_member_type(vtable_sptr, funcptr_expr.m + offset)
-========
         funcptr_member_type = self.get_vtable_member_type(
             vtable_sptr,
             funcptr_expr.m + offset
         )
->>>>>>>> WingsZeng-master:plugins/ida_medigate/cpp_plugin/hooks.py
         return funcptr_member_type
 
     def dump_expr(self, e):
-        log.debug("dump: %s", e.opname)
+        logging.debug("dump: %s", e.opname)
         while e.op in [
             ida_hexrays.cot_memref,
             ida_hexrays.cot_memptr,
@@ -361,9 +332,9 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
             ida_hexrays.cot_call,
         ]:
             if e.op in [ida_hexrays.cot_memref, ida_hexrays.cot_memptr]:
-                log.debug("(%s, %d, %s", e.opname, e.m, e.type.dstr())
+                logging.debug("(%s, %d, %s", e.opname, e.m, e.type.dstr())
             else:
-                log.debug("(%s, %s", e.opname, e.type.dstr())
+                logging.debug("(%s, %s", e.opname, e.type.dstr())
             e = e.x
 
     def find_ea(self):
@@ -384,7 +355,7 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
         union_name = self.get_vtables_union_name(expr)
         if union_name is None:
             return 0
-        log.debug("Found union - %s", union_name)
+        logging.debug("Found union -%s", union_name)
 
         chain = self.build_classes_chain(expr)
         if chain is None:
@@ -399,41 +370,13 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
         funcptr_member_type = self.find_funcptr(m)
 
         if ea == BADADDR:
-            log.debug("BADADDR")
+            logging.debug("BADADDR")
             return 0
-        log.debug("Found VTABLES, ea: %08X", ea)
+        logging.debug("Found VTABLES, ea: 0x%x", ea)
         self.selections.append((ea, m.soff, funcptr_member_type))
         return 0
 
 
-<<<<<<<< HEAD:plugins/ida_medigate/cpp_plugin/hexrays_hooks.py
-def _on_maturity(cfunc, maturity):
-    global _ANOTHER_DECOMPILER_EA
-    if maturity not in [idaapi.CMAT_FINAL]:
-        return
-    if _ANOTHER_DECOMPILER_EA:
-        _ANOTHER_DECOMPILER_EA = None
-        return
-    # if maturity in [idaapi.CMAT_CPA]:
-    # if maturity in [idaapi.CPA]:
-    pfv = Polymorphism_fixer_visitor_t(cfunc)
-    pfv.apply_to_exprs(cfunc.body, None)
-    log.debug("results: %s", pfv.selections)
-    if pfv.selections == []:
-        return
-    for ea, offset, funcptr_member_type in pfv.selections:
-        intvec = idaapi.intvec_t()
-        # TODO: Think if needed to distinguished between user
-        #   union members chooses and plugin chooses
-        if not cfunc.get_user_union_selection(ea, intvec):
-            intvec.push_back(offset)
-            cfunc.set_user_union_selection(ea, intvec)
-            if funcptr_member_type is not None:
-                ida_nalt.set_op_tinfo(ea, 0, funcptr_member_type)
-    cfunc.save_user_unions()
-    _ANOTHER_DECOMPILER_EA = cfunc.entry_ea
-
-========
 class HexRaysHooks(ida_hexrays.Hexrays_Hooks):
     def __init__(self, *args):
         ida_hexrays.Hexrays_Hooks.__init__(self, *args)
@@ -463,39 +406,9 @@ class HexRaysHooks(ida_hexrays.Hexrays_Hooks):
                             ida_nalt.set_op_tinfo(ea, 0, funcptr_member_type)
                 cfunc.save_user_unions()
                 self.another_decompile_ea = cfunc.entry_ea
->>>>>>>> WingsZeng-master:plugins/ida_medigate/cpp_plugin/hooks.py
 
-def _on_refresh_pseudocode(vu):
-    global _ANOTHER_DECOMPILER_EA
-    if not _ANOTHER_DECOMPILER_EA:
-        return
-    log.debug("decompile again")
-    ea = _ANOTHER_DECOMPILER_EA
-    ida_hexrays.mark_cfunc_dirty(ea, False)
-    cfunc = ida_hexrays.decompile(ea)
-    _ANOTHER_DECOMPILER_EA = None
-    vu.switch_to(cfunc, True)
+        return 0
 
-<<<<<<<< HEAD:plugins/ida_medigate/cpp_plugin/hexrays_hooks.py
-
-def _callback(*args):
-    if args[0] == idaapi.hxe_maturity:
-        cfunc = args[1]
-        maturity = args[2]
-        _on_maturity(cfunc, maturity)
-    elif args[0] == idaapi.hxe_refresh_pseudocode:
-        vu = args[1]
-        _on_refresh_pseudocode(vu)
-    return 0
-
-
-def install_hexrays_hooks():
-    return ida_hexrays.install_hexrays_callback(_callback)
-
-
-def remove_hexrays_hooks():
-    return ida_hexrays.remove_hexrays_callback(_callback)
-========
     def refresh_pseudocode(self, vu):
         logging.info(f"in refresh_pseudocode({vu=})")
         if self.another_decompile_ea:
@@ -506,4 +419,3 @@ def remove_hexrays_hooks():
             self.another_decompile_ea = None
             vu.switch_to(cfunc, True)
         return 0
->>>>>>>> WingsZeng-master:plugins/ida_medigate/cpp_plugin/hooks.py

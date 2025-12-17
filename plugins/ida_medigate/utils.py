@@ -332,29 +332,44 @@ def set_member_name(struct: ida_typeinf.tinfo_t, offset: int, new_name: str):
     return True
 
 
-def get_or_create_struct_id(struct_name, is_union=False):
+def get_or_create_struct_id(struct_name, is_union=False, is_class=False, parent_name=None):
     try:
         return ida_typeinf.tinfo_t(name=struct_name).get_tid()
     except ValueError as e:
+        return create_struct_id(struct_name, is_union=is_union, is_class=is_class, parent_name=parent_name)
+
+
+def create_struct_id(struct_name, is_union=False, is_class=False, parent_name=None, ntf_flags=0):
+    type_info = ida_typeinf.tinfo_t()
+    if is_class or parent_name:
+        # XXX is there a way to create class without parse() ?
+        decl = None
+        if is_class:
+            decl = "class "
+        else:
+            decl = "struct "
+        decl += struct_name
+        if parent_name:
+            decl += " : " + parent_name
+        decl += " {}"
+        if not type_info.parse(decl):
+            return
+    else:
         udt = ida_typeinf.udt_type_data_t()
-        type_info = ida_typeinf.tinfo_t()
         udt.is_union = is_union
-        if (
-            type_info.create_udt(udt) and
-            type_info.set_named_type(None, struct_name) == ida_typeinf.TERR_OK
-        ):
-            return type_info.get_tid()
+        if not type_info.create_udt(udt):
+            return
 
+    if type_info.set_named_type(None, struct_name, ntf_flags) == ida_typeinf.TERR_OK:
+        return type_info.get_tid()
 
-def get_or_create_struct(struct_name, replace_forward_decl=True):
-    struct_id = get_or_create_struct_id(struct_name)
+def get_or_create_struct(struct_name, replace_forward_decl=True, is_class=False, parent_name=None):
+    struct_id = get_or_create_struct_id(struct_name, is_class=is_class, parent_name=parent_name)
     t = ida_typeinf.tinfo_t(tid=struct_id)
     if replace_forward_decl and t and t.is_forward_decl() and t.get_size() == BADADDR:
         logging.warn("Struct %s is forward decl, replacing with a regular struct", struct_name)
-        t2 = ida_typeinf.tinfo_t()
-        t2.create_udt(ida_typeinf.udt_type_data_t())
-        t2.set_named_type(None, struct_name, ida_typeinf.NTF_REPLACE)
-        t = t2
+        struct_id = create_struct_id(struct_name, is_class=is_class, parent_name=parent_name, ntf_flags=ida_typeinf.NTF_REPLACE)
+        t = ida_typeinf.tinfo_t(tid=struct_id)
     return t
 
 

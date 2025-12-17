@@ -148,10 +148,10 @@ class medigate_cpp_gui_plugin_t(idaapi.plugin_t, idaapi.UI_Hooks):
         )
         self.MENU_ITEMS.append(
             medigate_cpp_gui_plugin_helps.MenuItem(
-                self.plugin_name + ":rebuilding_all_class",
-                self.rebuilding_all_class,
-                "rebuilding_all_class",
-                "rebuilding all class",
+                self.plugin_name + ":rebuild_all_classes",
+                self.rebuild_all_classes,
+                "rebuild_all_classes",
+                "rebuild all classes",
                 None,
                 True,
             )
@@ -272,7 +272,7 @@ class medigate_cpp_gui_plugin_t(idaapi.plugin_t, idaapi.UI_Hooks):
                 to_refresh=to_refresh,
             )
 
-    def rebuilding_all_class(self, BuildALL=1):
+    def rebuild_all_classes(self, BuildALL=1):
         from ida_medigate.rtti_parser import GccRTTIParser
 
         GccRTTIParser.init_parser()
