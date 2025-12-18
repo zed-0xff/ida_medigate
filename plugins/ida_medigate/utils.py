@@ -245,16 +245,6 @@ def add_to_struct(
             ret_val = struct.rename_udm(offset, formatted_member_name)
 
     return struct.get_udm(new_member_name)
-    
-
-
-def set_func_name(func_ea, func_name):
-    counter = 0
-    new_name = func_name
-    while not ida_name.set_name(func_ea, new_name):
-        new_name = func_name + "_%d" % counter
-        counter += 1
-    return new_name
 
 
 def deref_tinfo(tinfo: ida_typeinf.tinfo_t):
@@ -577,16 +567,15 @@ def force_make_struct(ea, struct_name):
     return ida_bytes.create_struct(ea, s_size, sptr.get_tid())
 
 
-@batchmode
-def set_name_retry(ea, name, name_func=ida_name.set_name, max_attempts=100):
-    i = 0
-    suggested_name = name
-    while not name_func(ea, suggested_name):
-        suggested_name = name + "_" + str(i)
-        i += 1
-        if i == max_attempts:
-            return None
-    return suggested_name
+# returns bool
+def set_name_retry(ea, name):
+    return ida_name.set_name(ea, name, ida_name.SN_NOCHECK | ida_name.SN_FORCE)
+
+
+# returns the final name
+def set_func_name(func_ea, func_name):
+    set_name_retry(func_ea, func_name)
+    return ida_name.get_name(func_ea)
 
 
 def add_struc_retry(name: str, max_attempts: int=100) -> tuple[(str | None), int]:
