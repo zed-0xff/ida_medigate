@@ -9,6 +9,8 @@ import ida_nalt
 import ida_name
 import ida_pro
 import ida_typeinf
+import ida_xref
+import idautils
 import idc
 from idc import BADADDR
 from ida_medigate import cpp_utils, utils
@@ -73,7 +75,7 @@ class CPPHooks(ida_idp.IDB_Hooks):
         if not new_name:
             return 0
         
-        func, args_list = cpp_utils.post_struct_member_name_change(udt_name, udm, new_name)
+        func, args_list = cpp_utils.post_struct_member_name_change(udt_name, udm, new_name, oldname)
         if func is not None:
             self.unhook()
             try:
@@ -390,6 +392,8 @@ class Polymorphism_fixer_visitor_t(ida_hexrays.ctree_visitor_t):
         return 0
 
 
+
+
 class HexRaysHooks(ida_hexrays.Hexrays_Hooks):
     def __init__(self, *args):
         ida_hexrays.Hexrays_Hooks.__init__(self, *args)
@@ -419,6 +423,9 @@ class HexRaysHooks(ida_hexrays.Hexrays_Hooks):
                             ida_nalt.set_op_tinfo(ea, 0, funcptr_member_type)
                 cfunc.save_user_unions()
                 self.another_decompile_ea = cfunc.entry_ea
+            
+            # Note: Virtual function call xrefs are now handled by the referee plugin
+            # which propagates xrefs from vtable members to actual functions automatically
 
         return 0
 
