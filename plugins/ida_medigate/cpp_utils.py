@@ -1682,7 +1682,7 @@ def create_vtable_struct(sptr, name, vtable_offset, parent_name=None):
 
 
 # syntax sugar: make_struct("S40") creates struct of size 0x40
-def make_struct(name, struct_size = None, parent_name = None):
+def make_struct(name, struct_size = None, parent_name = None, use_qword = True):
     struc = utils.get_or_create_struct(name, parent_name=parent_name)
 
     if struct_size is None:
@@ -1705,7 +1705,7 @@ def make_struct(name, struct_size = None, parent_name = None):
         field_name = "field_" + format(cur_size, "X")
         cur_offset = cur_size * utils.BYTE_SIZE
 
-        if struct_size - cur_size >= 8 and utils.WORD_LEN == 8:
+        if use_qword and struct_size - cur_size >= 8 and utils.WORD_LEN == 8:
             r = utils.add_to_struct(struc, field_name, bt_int64, cur_offset)
             cur_size += 8
 
