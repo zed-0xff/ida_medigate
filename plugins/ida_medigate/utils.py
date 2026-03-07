@@ -62,7 +62,12 @@ def make_ptr(ea):
 
 def is_func(ea):
     func: ida_funcs.func_t | None = ida_funcs.get_func(ea)
-    if func is not None and func.start_ea == ea:
+    if func and func.start_ea == ea:
+        return True
+    disasm = idc.GetDisasm(ea)
+    if disasm.startswith("extrn ") and not disasm.startswith("__ZTV"):
+        # extrn __ZN16SteamThreadTools7CThread4InitEv - SteamThreadTools::CThread::Init(void)
+        # extrn __ZTVNSt3__18ios_baseE                - vtable for std::ios_base
         return True
     return None
 
